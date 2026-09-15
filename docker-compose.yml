@@ -1,6 +1,7 @@
 services:
   vivo:
     build: .
+    image: vivo-agent
     container_name: vivo
     ports:
       - "8600:8000"

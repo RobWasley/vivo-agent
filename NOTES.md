@@ -3,7 +3,7 @@
 > Scratch space for environment discoveries and debugging. Not a plan.
 
 ## Environment Discoveries
-- Project path: `/home/rob/projects/voice-toy`
+- Project path: `/home/rob/projects/vivo-agent`
 - Git repo initialised (local-only, no remote).
 - Host: 24 cores, 46 GiB RAM (A3 satisfied). Docker 29.6.0, Compose v5.1.4.
 - llama.cpp server: `llama-server` listening on `0.0.0.0:8080` (verified via `ss`). Host URL `http://localhost:8080/v1`; container URL `http://host.docker.internal:8080/v1` via `extra_hosts: host-gateway` (U1 resolved).

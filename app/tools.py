@@ -1,5 +1,6 @@
-"""Tools for the smol agent: get_time, weather (open-meteo), read_file
-(sandboxed to DATA_DIR)."""
+"""Tools for the smol agent: get_time, weather (open-meteo), file tools
+(sandboxed to WORK_DIR), shell exec (app/shell.py), web search/fetch
+(app/web.py)."""
 from __future__ import annotations
 
 import datetime
@@ -9,6 +10,24 @@ from typing import List
 import httpx
 
 from app import config
+from app import shell as shell_tool
+from app import web as web_tool
+
+MAX_RESULT_CHARS = 16000
+IGNORED_DIRS = {
+    ".git",
+    "node_modules",
+    "__pycache__",
+    ".venv",
+    "venv",
+    "dist",
+    "build",
+    ".tox",
+    ".mypy_cache",
+    ".cache",
+    "target",
+}
+LIST_LIMIT = 200
 
 WMO_CODES = {
     0: "clear sky",
@@ -74,16 +93,54 @@ def weather(latitude: float, longitude: float) -> str:
     )
 
 
-def read_file(path: str, data_dir: str = None) -> str:
-    base = os.path.realpath(data_dir or config.DATA_DIR)
+def _resolve(path: str) -> str | None:
+    """Path inside the workspace root, or None."""
+    base = os.path.realpath(config.WORK_DIR)
     target = os.path.realpath(os.path.join(base, path))
     if target != base and not target.startswith(base + os.sep):
-        return "error: path is outside the sandbox"
+        return None
+    return target
+
+
+def read_file(path: str) -> str:
+    target = _resolve(str(path))
+    if target is None:
+        return "error: path is outside the workspace"
     if not os.path.isfile(target):
         return f"error: no such file: {path}"
     with open(target, encoding="utf-8", errors="replace") as f:
         text = f.read(MAX_READ_CHARS)
     return text.strip() or "(empty file)"
+
+
+def write_file(path: str, content: str) -> str:
+    target = _resolve(str(path))
+    if target is None:
+        return "error: path is outside the workspace"
+    if os.path.dirname(target):
+        os.makedirs(os.path.dirname(target), exist_ok=True)
+    with open(target, "w", encoding="utf-8") as f:
+        f.write(str(content))
+    return f"wrote {len(content)} chars to {os.path.relpath(target, os.path.realpath(config.WORK_DIR))}"
+
+
+def list_dir(path: str = "") -> str:
+    target = _resolve(str(path or "."))
+    if target is None:
+        return "error: path is outside the workspace"
+    if not os.path.isdir(target):
+        return f"error: no such directory: {path}"
+    try:
+        entries = sorted(e for e in os.listdir(target) if e not in IGNORED_DIRS)
+    except OSError as e:
+        return f"error: {e}"
+    if not entries:
+        return "(empty directory)"
+    lines = [
+        f"{e}/" if os.path.isdir(os.path.join(target, e)) else e for e in entries[:LIST_LIMIT]
+    ]
+    note = f"\n({LIST_LIMIT} of {len(entries)} entries)" if len(entries) > LIST_LIMIT else ""
+    return "\n".join(lines) + note
 
 
 TOOLS: List[dict] = [
@@ -114,14 +171,100 @@ TOOLS: List[dict] = [
         "type": "function",
         "function": {
             "name": "read_file",
-            "description": (
-                "Read a text file from the sandboxed data directory. "
-                "Path is relative to that directory."
-            ),
+            "description": "Read a text file from the workspace. Path is relative to the workspace root.",
             "parameters": {
                 "type": "object",
                 "properties": {"path": {"type": "string"}},
                 "required": ["path"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "write_file",
+            "description": (
+                "Create or overwrite a text file in the workspace. "
+                "Path is relative to the workspace root."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string"},
+                    "content": {"type": "string"},
+                },
+                "required": ["path", "content"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_dir",
+            "description": "List files and directories in the workspace (default: the root).",
+            "parameters": {
+                "type": "object",
+                "properties": {"path": {"type": "string"}},
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "exec",
+            "description": (
+                "Run a shell command in the workspace (bash). Use for builds, "
+                "git, scripts, and anything else you can do on the machine. "
+                "Keep commands short; output is truncated."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "command": {"type": "string"},
+                    "working_dir": {
+                        "type": "string",
+                        "description": "Optional subdirectory of the workspace.",
+                    },
+                    "timeout": {
+                        "type": "integer",
+                        "description": "Timeout in seconds (default 60, max 120).",
+                    },
+                },
+                "required": ["command"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "web_search",
+            "description": "Search the web (DuckDuckGo). Returns titles, URLs, and snippets.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string"},
+                    "count": {"type": "integer", "description": "Results to return (1-5)."},
+                },
+                "required": ["query"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "web_fetch",
+            "description": (
+                "Fetch a URL and return its readable text/markdown. Use to read "
+                "a specific page found via web_search."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "url": {"type": "string"},
+                    "max_chars": {"type": "integer", "description": "Max characters to return."},
+                },
+                "required": ["url"],
             },
         },
     },
@@ -131,11 +274,42 @@ TOOLS: List[dict] = [
 def execute(name: str, args: dict) -> str:
     try:
         if name == "get_time":
-            return get_time()
-        if name == "weather":
-            return weather(float(args["latitude"]), float(args["longitude"]))
-        if name == "read_file":
-            return read_file(str(args["path"]))
-        return f"error: unknown tool: {name}"
+            result = get_time()
+        elif name == "weather":
+            result = weather(float(args["latitude"]), float(args["longitude"]))
+        elif name == "read_file":
+            result = read_file(str(args["path"]))
+        elif name == "write_file":
+            result = write_file(str(args["path"]), str(args["content"]))
+        elif name == "list_dir":
+            result = list_dir(str(args.get("path", "")))
+        elif name == "exec":
+            result = shell_tool.run_shell(
+                str(args.get("command", "")),
+                working_dir=args.get("working_dir"),
+                timeout=args.get("timeout"),
+            )
+        elif name == "web_search":
+            result = web_tool.web_search(
+                str(args.get("query", "")), count=args.get("count")
+            )
+        elif name == "web_fetch":
+            result = web_tool.web_fetch(
+                str(args.get("url", "")), max_chars=args.get("max_chars")
+            )
+        else:
+            return f"error: unknown tool: {name}"
     except Exception as e:  # noqa: BLE001 - tool errors become model-visible text
         return f"error: {e}"
+    return _cap_result(result)
+
+
+def _cap_result(text: str) -> str:
+    if len(text) <= MAX_RESULT_CHARS:
+        return text
+    half = MAX_RESULT_CHARS // 2
+    return (
+        text[:half]
+        + f"\n\n... ({len(text) - MAX_RESULT_CHARS:,} chars truncated) ...\n\n"
+        + text[-half:]
+    )

@@ -1,7 +1,7 @@
 # SPEC: vivo
 
 > Status: approved — implementation in progress
-> Last updated: 2026-09-15 16:34
+> Last updated: 2026-09-15 23:49
 
 ## Objective
 
@@ -13,9 +13,9 @@ A CPU-only, single-container voice assistant: talk to it hands-free through a br
 - Web UI: wobbly audio-reactive dot + transcript sidebar.
 - STT: faster-whisper `small` int8, in-process.
 - TTS: kokoro-onnx 82M, in-process.
-- Agent: stateless smol agent (no context/memory between turns), pointed at the user's existing llama.cpp v1 endpoint.
+- Agent: smol agent pointed at the user's existing llama.cpp v1 endpoint, with persistent conversation memory: turn history shared across utterances, idle-time summary compaction when history grows (T011, D009). Full tool set (T012, D010): sandboxed shell `exec` in the mounted workspace, file tools (`read_file`, `write_file`, `list_dir`), keyless web search (`web_search`, DuckDuckGo) and page reading (`web_fetch`).
 - Models stored on a mounted volume (survive rebuilds).
-- Config via env: `LLM_BASE_URL`, `LLM_MODEL`, `PERSONA`.
+- Config via env: `LLM_BASE_URL`, `LLM_MODEL`, `PERSONA`, `COMPACT_AFTER_CHARS`, `KEEP_RECENT_TURNS`, `WORK_DIR`, `EXEC_TIMEOUT`, `EXEC_MAX_OUTPUT`, `SEARCH_MAX_RESULTS`, `FETCH_MAX_CHARS`.
 - Non-thinking LLM responses per request (instant voice replies) — see D005.
 
 ## Assumptions
@@ -40,8 +40,9 @@ A CPU-only, single-container voice assistant: talk to it hands-free through a br
 - Python 3.11 base image.
 
 ## Non-Goals
-- No conversation memory/context between turns (stateless agent).
-- No multi-user, no auth, no persistence of transcripts.
+- No conversation memory/context between turns (stateless agent). — **superseded 2026-09-15 by T011/D009**: turn history + idle compaction now in scope.
+- No multi-user, no auth. Conversation history persists (compact, on the mounted `./data` volume), but no per-user accounts or transcript archive.
+- No host-level command execution: `exec` runs inside the container, sandboxed to the mounted workspace (D010). No background/long-running command sessions, no MCP, no plugin system.
 - No GPU path, no Breeze/audio.cpp.
 - No mobile app; browser only.
 - No fine-tuning or custom voices.

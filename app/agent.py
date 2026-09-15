@@ -1,19 +1,24 @@
-"""Stateless smol agent: hand-rolled tool loop against llama.cpp v1.
+"""Smol agent: hand-rolled tool loop against llama.cpp v1.
 
 - non-thinking per request: chat_template_kwargs={"enable_thinking": false}
 - streaming: final answer deltas are yielded live (sentence-chunked TTS
   downstream can start before the full reply is generated)
-- tool calls are executed internally and the loop re-calls the model
+- tool calls are executed internally (in parallel within a round) and the
+  loop re-calls the model; tool exceptions become model-visible error text
+- `reply()` accepts prior conversation history (see app/conversation.py)
+- `summarize()` is a non-streaming helper for conversation compaction
 """
 from __future__ import annotations
 
 import json
+from concurrent.futures import ThreadPoolExecutor
 from typing import Dict, Iterator, List, Optional
 
 import httpx
 
 DEFAULT_MAX_TOKENS = 300
-DEFAULT_MAX_TOOL_ROUNDS = 3
+DEFAULT_MAX_TOOL_ROUNDS = 8
+SUMMARY_MAX_TOKENS = 300
 
 
 class ToolRound:
@@ -120,21 +125,35 @@ class Agent:
             )
         yield "tool_calls", tool_calls
 
-    def reply(self, user_text: str, execute) -> Iterator:
+    def reply(
+        self, user_text: str, execute, history: Optional[List[dict]] = None
+    ) -> Iterator:
         """Run the tool loop. Yields str deltas of the final answer and
         ToolRound markers after executed tool rounds. `execute(name, args)
-        -> str` runs a tool."""
+        -> str` runs a tool. `history` is prior OpenAI-style messages
+        (system/user/assistant), e.g. from Conversation.messages()."""
         messages = [
             {
                 "role": "system",
                 "content": (
                     f"{self.persona}\nYou are a hands-free voice assistant; your "
                     "replies are spoken aloud. Keep replies to one or two short "
-                    "spoken sentences. Use the available tools when they help."
+                    "spoken sentences and summarise tool results in plain words; "
+                    "never read raw output, code, or lists aloud. You have a "
+                    "sandboxed shell (exec) and file tools (read_file, "
+                    "write_file, list_dir) in the workspace directory, current "
+                    "weather, web search, and web page reading. Prefer quick "
+                    "commands. Before a tool call that may take a while (search, "
+                    "fetch, long command), first say in a few words what you are "
+                    "doing. If a tool fails, try once differently, then say what "
+                    "went wrong. Earlier conversation context may be included; "
+                    "use it naturally and do not repeat it back."
                 ),
-            },
-            {"role": "user", "content": user_text},
+            }
         ]
+        if history:
+            messages.extend(history)
+        messages.append({"role": "user", "content": user_text})
         rounds = 0
         while True:
             tool_calls: Optional[List[dict]] = None
@@ -153,17 +172,51 @@ class Agent:
                     "tool_calls": tool_calls,
                 }
             )
-            for tc in tool_calls:
+
+            def run_tool(tc: dict) -> str:
                 try:
                     args = json.loads(tc["function"]["arguments"] or "{}")
                 except json.JSONDecodeError:
                     args = {}
-                result = execute(tc["function"]["name"], args)
+                try:
+                    return str(execute(tc["function"]["name"], args))
+                except Exception as e:  # noqa: BLE001 - model-visible error text
+                    return f"error: {type(e).__name__}: {e}"
+
+            # parallel within a round; results stay in tool_call order
+            with ThreadPoolExecutor(max_workers=min(4, len(tool_calls))) as pool:
+                results = list(pool.map(run_tool, tool_calls))
+            for tc, result in zip(tool_calls, results):
                 messages.append(
                     {
                         "role": "tool",
                         "tool_call_id": tc["id"],
-                        "content": str(result),
+                        "content": result,
                     }
                 )
             yield ToolRound()
+
+    def summarize(self, messages: List[dict]) -> str:
+        """Non-streaming summary of a conversation slice (compaction)."""
+        payload = {
+            "model": self.model,
+            "messages": [
+                {
+                    "role": "system",
+                    "content": (
+                        "You are a memory consolidator. Summarise the "
+                        "conversation in a few short factual sentences: what "
+                        "was said, decided, or requested; keep names, numbers, "
+                        "dates, and preferences. Do not answer questions that "
+                        "appear in it. Reply with the summary only."
+                    ),
+                },
+                *messages,
+            ],
+            "stream": False,
+            "max_tokens": SUMMARY_MAX_TOKENS,
+            "chat_template_kwargs": {"enable_thinking": False},
+        }
+        r = self.client.post(f"{self.base_url}/chat/completions", json=payload)
+        r.raise_for_status()
+        return (r.json()["choices"][0]["message"].get("content") or "").strip()

@@ -11,9 +11,11 @@ services:
       PERSONA: ${PERSONA:-You are vivo, a helpful voice assistant. Keep replies to one or two short spoken sentences.}
       MODEL_DIR: /models
       DATA_DIR: /data
+      WORK_DIR: /workspace
     volumes:
       - ./models:/models
       - ./data:/data
+      - /home/rob/projects:/workspace
     extra_hosts:
       - "host.docker.internal:host-gateway"
     restart: unless-stopped

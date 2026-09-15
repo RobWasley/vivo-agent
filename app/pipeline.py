@@ -33,6 +33,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import re
 import threading
 import time
@@ -41,6 +42,7 @@ import numpy as np
 
 from app import config, tools
 from app.agent import Agent, ToolRound
+from app.conversation import Conversation
 from app.stt import STT
 from app.tts import TTS
 from app.vad import VAD
@@ -92,6 +94,11 @@ class Engines:
         self.tts = TTS(model_dir=config.MODEL_DIR)
         self.agent = Agent(
             config.LLM_BASE_URL, config.LLM_MODEL, config.PERSONA, tools=tools.TOOLS
+        )
+        self.conversation = Conversation(
+            data_path=os.path.join(config.DATA_DIR, "conversation.json"),
+            compact_after_chars=config.COMPACT_AFTER_CHARS,
+            keep_recent_turns=config.KEEP_RECENT_TURNS,
         )
 
     def close(self) -> None:
@@ -163,6 +170,8 @@ def _handle_utterance(samples: np.ndarray, session: VoiceSession, gen: int) -> N
     engines = session.engines
     t_start = time.monotonic()
     tim: dict = {"stt": None, "first_text": None, "first_audio": None}
+    text = ""
+    spoken: list[str] = []
     try:
         t0 = time.monotonic()
         text = engines.stt.transcribe(samples)
@@ -175,6 +184,8 @@ def _handle_utterance(samples: np.ndarray, session: VoiceSession, gen: int) -> N
             return
 
         chunker = SentenceChunker()
+        history = engines.conversation.messages()
+        spoken: list[str] = []
 
         def speak(sentence: str) -> None:
             if not session.alive(gen):
@@ -196,13 +207,14 @@ def _handle_utterance(samples: np.ndarray, session: VoiceSession, gen: int) -> N
                 session.send({"type": "tool", "name": name, "result": str(result)[:300]})
             return result
 
-        for item in engines.agent.reply(text, execute):
+        for item in engines.agent.reply(text, execute, history=history):
             if not session.alive(gen):
                 break
             if isinstance(item, ToolRound):
                 continue
             if tim["first_text"] is None:
                 tim["first_text"] = time.monotonic() - t_start
+            spoken.append(item)
             session.send({"type": "agent_text", "delta": item})
             for sentence in chunker.add(item):
                 speak(sentence)
@@ -226,6 +238,10 @@ def _handle_utterance(samples: np.ndarray, session: VoiceSession, gen: int) -> N
             if is_current:
                 session.reply_active = False
                 session.generation += 1
+        answer = "".join(spoken).strip()
+        if answer:
+            engines.conversation.add_turn(text, answer)
+        engines.conversation.maybe_compact(engines.agent.summarize)
         if is_current and not session.closed:
             session.send({"type": "reply_done"})
 

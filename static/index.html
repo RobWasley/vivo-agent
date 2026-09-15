@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>vivo</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ccircle cx='50' cy='50' r='42' fill='%234fd1c5'/%3E%3Ccircle cx='38' cy='44' r='7' fill='%230b0b10'/%3E%3Ccircle cx='62' cy='44' r='7' fill='%230b0b10'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header>
+    <div class="brand">
+      <span class="brand-dot"></span>
+      <h1>vivo</h1>
+    </div>
+    <div class="status" id="status" data-state="connecting">
+      <span class="status-led"></span>
+      <span class="status-label" id="status-label">Connecting&hellip;</span>
+    </div>
+  </header>
+
+  <main>
+    <section class="stage">
+      <canvas id="dot"></canvas>
+      <div class="meter" title="input level">
+        <div class="meter-fill" id="meter-fill"></div>
+      </div>
+    </section>
+
+    <aside class="sidebar">
+      <div class="sidebar-head">
+        <h2>Transcript</h2>
+        <button class="ghost" id="btn-clear" title="Clear transcript">clear</button>
+      </div>
+      <div class="transcript" id="transcript">
+        <div class="entry entry-hint">
+          <span class="who">vivo</span>
+          <p>Hit <b>start</b>, then talk. I&rsquo;ll listen, think, and answer out loud.</p>
+        </div>
+      </div>
+    </aside>
+  </main>
+
+  <footer class="controls">
+    <button class="primary" id="btn-start">start</button>
+    <button id="btn-barage" title="Interrupt me now">barage in</button>
+    <button class="ghost" id="btn-flush" title="Finish the current utterance">flush</button>
+    <span class="hint" id="hint">mic off &middot; click <b>start</b> to allow the microphone</span>
+  </footer>
+
+  <script src="app.js"></script>
+</body>
+</html>

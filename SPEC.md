@@ -1,11 +1,11 @@
-# SPEC: voice-toy
+# SPEC: vivo
 
-> Status: draft (awaiting review)
-> Last updated: 2026-09-15 15:50
+> Status: approved — implementation in progress
+> Last updated: 2026-09-15 16:34
 
 ## Objective
 
-A CPU-only, single-container voice toy: talk to it hands-free through a browser, it listens (Silero VAD), transcribes (faster-whisper small int8), answers via a stateless smol agent pointed at the existing llama.cpp v1 endpoint, and speaks back (kokoro-onnx 82M). The UI is a wobbly audio-reactive dot plus a transcript sidebar. Design borrows Pithagoras's voice pipeline (speculative transcription, sentence-chunked streaming TTS, barge-in) but is a fresh CPU build — Pithagoras's own voice stack is GPU-locked.
+A CPU-only, single-container voice assistant: talk to it hands-free through a browser, it listens (Silero VAD), transcribes (faster-whisper small int8), answers via a stateless smol agent pointed at the existing llama.cpp v1 endpoint, and speaks back (kokoro-onnx 82M). The UI is a wobbly audio-reactive dot plus a transcript sidebar.
 
 ## Confirmed Requirements
 - CPU-only; single Docker container.
@@ -35,7 +35,7 @@ A CPU-only, single-container voice toy: talk to it hands-free through a browser,
 - Existing llama.cpp server (v1 OpenAI-compatible endpoint) — user's, already running.
 - faster-whisper (CTranslate2) — CPU wheels.
 - kokoro-onnx — CPU.
-- Silero VAD (bundled with faster-whisper? No — separate `silero-vad` or onnxruntime model; verify).
+- Silero VAD: `silero_vad_v6.onnx` bundled with faster-whisper, run via onnxruntime (verified 2026-09-15, see D006).
 - open-meteo API (no key) for the weather tool.
 - Python 3.11 base image.
 
@@ -47,10 +47,10 @@ A CPU-only, single-container voice toy: talk to it hands-free through a browser,
 - No fine-tuning or custom voices.
 
 ## Unknowns
-- U1: Exact llama.cpp server URL/port reachable from the container.
-- U2: Whether the live model's template honours `chat_template_kwargs.enable_thinking=false` (test with curl before building the agent).
-- U3: Silero VAD integration path: `silero-vad` pip package vs onnxruntime + model file.
-- U4: Kokoro voice quality/latency on this CPU (bench in T003).
+- ~~U1~~ (resolved 2026-09-15): llama.cpp reachable from container at `http://host.docker.internal:8080/v1` (server on `0.0.0.0:8080`).
+- ~~U2~~ (resolved 2026-09-15): `qwen3.8-27b` honours `chat_template_kwargs={"enable_thinking": false}` — no `reasoning_content` in response.
+- ~~U3~~ (resolved 2026-09-15): Silero VAD runs via onnxruntime using the `silero_vad_v6.onnx` bundled inside faster-whisper — no separate package (D006).
+- U4: Kokoro voice quality/latency on this CPU (bench in T003/T004).
 - U5: Mic access over plain HTTP from a LAN origin (A4).
 
 ## Acceptance Criteria
@@ -62,7 +62,7 @@ A CPU-only, single-container voice toy: talk to it hands-free through a browser,
 - [ ] AC6: The dot wobbles/reacts to audio levels (mic input and/or TTS output).
 - [ ] AC7: Tools work: `get_time`, `weather` (open-meteo), `read_file` (sandboxed to a mounted dir) — agent can call them and fold results into the spoken reply.
 - [ ] AC8: Models live on a mounted volume; `docker compose down && up` does not re-download them.
-- [ ] AC9: `LLM_BASE_URL`, `LLM_MODEL`, `PERSONA` env vars are honoured (change persona → different voice character).
+- [ ] AC9: `LLM_BASE_URL`, `LLM_MODEL`, `PERSONA` env vars are honoured (change persona → different vivo identity).
 
 ## Proposed Architecture
 
@@ -96,9 +96,9 @@ Components:
 - `app/tts.py` — kokoro-onnx wrapper (lazy load, sentence streaming).
 - `app/agent.py` — stateless tool loop against llama.cpp v1.
 - `app/tools.py` — get_time, weather (open-meteo), read_file (sandboxed).
-- `app/chunker.py` — sentence chunker (≤600 chars, Pithagoras-style).
+- `app/chunker.py` — sentence chunker (≤600 chars).
 - `static/index.html` + `static/app.js` + `static/style.css` — dot UI, mic capture, audio playback, transcript sidebar.
 - `docker-compose.yml` — single service, volume for models, env passthrough.
 - `Dockerfile` — python:3.11-slim, CPU wheels.
 
-Why this design: mirrors Pithagoras's proven pipeline (speculative STT, sentence-chunked TTS, barge-in) on a CPU-friendly stack; hand-rolled agent keeps it small and auditable; single process avoids IPC latency.
+Why this design: proven pipeline (speculative STT, sentence-chunked TTS, barge-in) on a CPU-friendly stack; hand-rolled agent keeps it small and auditable; single process avoids IPC latency.

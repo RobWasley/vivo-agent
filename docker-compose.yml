@@ -1,0 +1,18 @@
+services:
+  vivo:
+    build: .
+    container_name: vivo
+    ports:
+      - "8600:8000"
+    environment:
+      LLM_BASE_URL: ${LLM_BASE_URL:-http://host.docker.internal:8080/v1}
+      LLM_MODEL: ${LLM_MODEL:-qwen3.8-27b}
+      PERSONA: ${PERSONA:-You are vivo, a helpful voice assistant. Keep replies to one or two short spoken sentences.}
+      MODEL_DIR: /models
+      DATA_DIR: /data
+    volumes:
+      - ./models:/models
+      - ./data:/data
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped

@@ -1,24 +1,43 @@
-# STATUS: voice-toy
+# STATUS: vivo
 
-> Last updated: 2026-09-15 15:50
+> Last updated: 2026-09-15 20:51
 
 ## Current State
-Spec drafted and awaiting user review. No code yet. Git repo initialised.
+**All 10 tasks (T001–T010) complete and verified.** Backend test suite passes: **18/18** (unit + live WS pipeline integration, ~45 s) via `docker compose run --rm -w /app -e WS_URL=ws://vivo:8000/ws vivo python -m pytest tests -v`. Container is up on host port 8600 serving the voice pipeline at `/ws` and the browser UI at `/`. Models on volume idempotent; `PERSONA` env verified live (pirate ↔ default); errors surface in the UI sidebar; per-utterance latency logged. Project per SPEC.md is feature-complete.
 
 ## In Progress
-- SPEC.md written for review (per user's process: review before scaffolding).
+- None.
 
 ## Recently Completed
-- Project dir created at `/home/rob/projects/voice-toy`, git initialised, `.gitignore` added.
-- SPEC.md, TASKS.md, STATUS.md, DECISIONS.md, NOTES.md drafted.
+- Barge-in race fixed (D008): `test_barge_in_cancels_reply` was timing out when the interrupted worker was mid an uninterruptible TTS synthesis — `reply_active` stayed up until the old worker exited, so the next utterance's mic audio was dropped by the echo guard and never produced an `end`. `barge_in` now calls `session.release()` (atomically frees the mic + bumps a `generation` counter) and workers check `session.alive(gen)` instead of the old shared cancel Event, so an interrupted reply can never send stale audio and can't clobber a newer one. Verified: barge-in 3/3 alone (25–31 s), full suite **18/18 in 44.95 s** (was flaky at ~150 s).
+- Mic/secure-context UX: the browser mic (`getUserMedia`) only exists on HTTPS or `localhost`; over a plain-HTTP LAN IP `navigator.mediaDevices` is `undefined` and the start button threw a cryptic error. Now the UI detects a non-secure context, disables the start button, and posts a clear, actionable sidebar message (HTTPS/reverse-proxy, `localhost`, or the Chrome `unsafely-treat-insecure-origin-as-secure` flag). Verified via Playwright: `http://192.168.0.200:8600` → `startDisabled:true` + message; `http://localhost:8600` → enabled, no false alarm. README gained a "Microphone & HTTPS" section. A self-signed-HTTPS/entrypoint path was prototyped then reverted — the user fronts the container with **Nginx Proxy Manager + a real certificate** (container stays plain HTTP). NPM needs Websockets enabled + a raised upstream timeout for the long-lived WS.
+- T010 polish (final): `PERSONA` env verified both ways (pirate → "…arr… matey", default → friendly pangram reply); error surfacing verified end-to-end via dead-LLM ephemeral container → sidebar `entry-error` "ConnectError: [Errno 111] Connection refused"; added WS-disconnect sidebar error; added per-utterance latency log (`utterance X (stt X, first text X, first audio X)`).
+- T009 models-on-volume idempotency verified: `docker compose down && up` → `model present: /models/kokoro/…` ×2, zero download lines; forced faster-whisper load (1.15 s, transcribed fixture); all 600 MB volume files md5- and mtime-identical before/after. Removed stray `models/testwrite` leftover.
+- T008 `static/{index.html,style.css,app.js}`: browser UI — canvas wobbly audio-reactive dot (state colour, eyes/blink, level-driven wobble+glow), mic capture (getUserMedia → ScriptProcessor → linear resample → 16 kHz int16 → WS binary), playback (24 kHz int16 → chained BufferSources + AnalyserNode), transcript sidebar (you/toy-streaming/tool/error), status pill, start/barage-in/flush/clear controls, inline SVG favicon. Headless-verified via Playwright (`.playwright-mcp/`): transcript + streamed reply + TTS-to-completion + level meter, **0 console errors**.
+- T007 `app/pipeline.py` + `app/main.py` `/ws`: WS pipeline (VAD→STT→agent→TTS), sentence chunker, threaded utterance worker, barge-in (cancel Event; mic ignored while reply active as echo guard), `Engines` shared singletons in lifespan. Integration tests `tests/test_pipeline.py`: 2/2 live (happy path + barge-in + post-barge recovery). Fixture `tests/fixtures/prompt_long.wav` (TTS story prompt) added.
+- T002 `app/vad.py`: streaming Silero v6 VAD with endpointing (hysteresis, min_speech on voiced region, max-speech split, flush). 5/5 tests.
+- T003 `app/stt.py`: faster-whisper small int8 wrapper. Bench 4.6× realtime.
+- T004 `app/tts.py`: kokoro-onnx wrapper, per-chunk streaming. Bench ~1.08× realtime (61.8 ms/char).
+- T005 `app/agent.py`: hand-rolled streaming tool loop; live test against `qwen3.8-27b` passes (tool round-trip, no think tags).
+- T006 `app/tools.py`: get_time / weather / read_file (sandboxed). 6/6 tests.
+- `app/models.py`: idempotent kokoro download on startup (`ensure_models` in main.py lifespan); kokoro-v1.0.int8.onnx + voices-v1.0.bin on `./models` (136 MB).
+- Test fixture `tests/fixtures/stt_sample.wav` (TTS-generated "The quick brown fox…", 24 kHz int16) committed for STT + VAD tests.
 
 ## Blockers
-- Awaiting user sign-off on SPEC.md before T001 (scaffold).
+- <none>
 
 ## Next Action
-- Present SPEC.md to user for review. On approval, start T001 (scaffold).
+- None in the app itself — all tasks done. User is adding an Nginx Proxy Manager host (valid SSL) pointing at `http://192.168.0.200:8600` with Websockets enabled + raised upstream timeout; that makes the mic work from other devices. Candidate follow-ups (out of scope unless asked): first `git commit` of the source tree (still untracked), a real-mic smoke test on a device using the HTTPS proxy, longer conversations to exercise the multi-sentence TTS path.
 
 ## Resume Notes
-- User's process: SPEC.md must be reviewed before scaffolding/implementation.
-- Pithagoras voice pipeline is the design reference (speculative STT, sentence-chunked TTS, barge-in) but its code is GPU-locked — this is a fresh CPU build.
-- Open unknowns to verify early: llama.cpp URL reachable from container (U1), enable_thinking support on the live model (U2), mic over plain HTTP (U4/A4).
+- Live llama.cpp: `http://localhost:8080/v1` (host) / `http://host.docker.internal:8080/v1` (container). Loaded model `qwen3.8-27b`. Generation ~11 tok/s.
+- Run tests: `docker compose run --rm -w /app vivo python -m pytest tests -v -p no:cacheprovider` (fresh container = current image; `exec` on the running container may lag a rebuild).
+- Run one-off scripts in-container: copy to `/tmp` then `docker compose exec -T -w /app vivo env PYTHONPATH=/app python /tmp/script.py` (script dir, not cwd, is on sys.path).
+- Volume dirs `./models` `./data` must be owned by uid 1000 (docker creates them as root otherwise; `sudo chown 1000:1000` — done).
+- VAD test signal: real TTS speech fixture. Synthetic tones do NOT reliably trigger Silero v6 (220 Hz sine max prob 0.507, 1 window; 440 Hz / saw / pink noise: 0) — see NOTES.md.
+- kokoro-onnx 0.6.1: import `kokoro_onnx`; `Kokoro(model_path, voices_path)`; `.create(text, voice, speed, sentence_pause)` → (float32, 24000); `.get_voices()`; voice `af_heart` confirmed present.
+- TTS is ~1× realtime; stream per sentence to keep first-audio latency low (D007).
+- Pipeline WS protocol is documented in the `app/pipeline.py` module docstring (client→server: binary 16k int16 PCM, `barge_in`/`flush`/`ping`; server→client: `start`/`end`/`transcript`/`agent_text`/`tool`/binary 24k int16 PCM/`barge_ack`/`reply_done`/`error`).
+- Pipeline tests: `docker compose run --rm -w /app -e WS_URL=ws://vivo:8000/ws vivo python -m pytest tests -v` (run container reaches the service by compose network name).
+- UI test (headless, no mic device): `.playwright-mcp/ui_test*.js` drive the live UI and inject `tests/fixtures/stt_sample.wav` through the page's own `resampleTo16k`→`f32To16`→`ws.send` path (skips only `getUserMedia`). Regenerate the runnable copy (fixture is embedded as base64) after editing the template `ui_test.js`: replace `__PCM_B64__` with the wav body (skip 44-byte header) base64. Served files are baked into the image (`COPY static/`) → `docker compose build && up -d --force-recreate` after UI edits.
+- UI host port 8600. User's process: SPEC.md reviewed before scaffolding — satisfied.

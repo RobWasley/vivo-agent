@@ -10,6 +10,14 @@
 const TARGET_MIC_RATE = 16000;
 const TARGET_PLAY_RATE = 24000;
 
+/* Auto barge-in: while vivo is speaking, sustained mic level above the
+ * threshold (your voice, after the browser's echo cancellation) interrupts
+ * the reply. micLevel is rms*6 clamped to [0,1], sampled per ~25 ms mic
+ * callback; typical speech lands 0.3-1.0, post-AEC echo usually < 0.2. */
+const BARGE_LEVEL_THRESHOLD = 0.25;
+const BARGE_SUSTAIN_MS = 250; // level must stay above threshold this long
+const BARGE_COOLDOWN_MS = 700; // suppress re-triggers right after a barge
+
 const $ = (id) => document.getElementById(id);
 const el = {
   canvas: $("dot"),
@@ -36,6 +44,9 @@ const S = {
   playLevel: 0,
   currentVivoEntry: null,
   pingTimer: null,
+  bargePendingSince: null, // timestamp mic level started sustaining above threshold
+  bargeCooldownUntil: 0, // suppress auto-barge re-triggers until this time
+  dropAudio: false, // ignore in-flight TTS frames after a barge until the next `end`
 };
 
 /* ---------------- websocket ---------------- */
@@ -122,6 +133,7 @@ async function startMic() {
     for (let i = 0; i < input.length; i++) sum += input[i] * input[i];
     const rms = Math.sqrt(sum / input.length);
     S.micLevelTarget = Math.min(1, rms * 6);
+    checkAutoBarge();
 
     if (S.ws && S.ws.readyState !== WebSocket.OPEN) return;
     const resampled = resampleTo16k(input, ctx.sampleRate);
@@ -192,6 +204,7 @@ function ensurePlay() {
 }
 
 function enqueueTTS(buf) {
+  if (S.dropAudio) return; // stale frame from a barged-in reply
   ensurePlay();
   const p = S.play;
   const int16 = new Int16Array(buf);
@@ -221,6 +234,38 @@ function stopPlayback() {
   S.play.nextPlayTime = S.play.ctx.currentTime;
 }
 
+/* ---------------- barge-in ---------------- */
+
+function vivoIsSpeaking() {
+  return S.pipeline === "speaking" || (S.play && S.play.sources.size > 0);
+}
+
+function bargeIn() {
+  if (!S.ws || S.ws.readyState !== WebSocket.OPEN) return;
+  S.dropAudio = true; // TTS frames already in flight must not replay
+  S.bargePendingSince = null;
+  S.bargeCooldownUntil = performance.now() + BARGE_COOLDOWN_MS;
+  stopPlayback();
+  sendJson({ type: "barge_in" });
+}
+
+function checkAutoBarge() {
+  const now = performance.now();
+  if (!vivoIsSpeaking() || now < S.bargeCooldownUntil) {
+    S.bargePendingSince = null;
+    return;
+  }
+  if (S.micLevelTarget > BARGE_LEVEL_THRESHOLD) {
+    if (S.bargePendingSince === null) {
+      S.bargePendingSince = now;
+    } else if (now - S.bargePendingSince >= BARGE_SUSTAIN_MS) {
+      bargeIn();
+    }
+  } else {
+    S.bargePendingSince = null; // dropped below threshold: restart the sustain window
+  }
+}
+
 function readPlayLevel() {
   if (!S.play || S.play.sources.size === 0) return 0;
   const p = S.play;
@@ -239,6 +284,7 @@ function handleServerJson(m) {
       setPipeline("listening");
       break;
     case "end":
+      S.dropAudio = false; // a fresh reply: its audio is welcome again
       setPipeline("thinking");
       break;
     case "transcript":
@@ -252,6 +298,9 @@ function handleServerJson(m) {
       addEntry("tool", `${m.name} &rarr; ${escapeHtml(String(m.result).slice(0, 120))}`);
       break;
     case "barge_ack":
+      S.dropAudio = true;
+      stopPlayback(); // belt-and-braces: barge may not have come from our button
+      setPipeline("idle");
       break;
     case "reply_done":
       setPipeline("idle");
@@ -430,10 +479,7 @@ el.btnStart.addEventListener("click", async () => {
   }
 });
 
-el.btnBarage.addEventListener("click", () => {
-  stopPlayback();
-  sendJson({ type: "barge_in" });
-});
+el.btnBarage.addEventListener("click", bargeIn);
 
 el.btnFlush.addEventListener("click", () => sendJson({ type: "flush" }));
 

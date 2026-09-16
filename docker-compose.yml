@@ -6,20 +6,44 @@ services:
     ports:
       - "8600:8000"
     environment:
-      LLM_BASE_URL: ${LLM_BASE_URL:-http://host.docker.internal:8080/v1}
-      LLM_MODEL: ${LLM_MODEL:-qwen3.8-27b}
-      PERSONA: ${PERSONA:-You are vivo, a helpful voice assistant. Keep replies to one or two short spoken sentences.}
-      LLM_THINKING: ${LLM_THINKING:-1}
-      LLM_MAX_TOKENS: ${LLM_MAX_TOKENS:-600}
-      THINK_FILLER_FIRST_AFTER: ${THINK_FILLER_FIRST_AFTER:-2.0}
-      THINK_FILLER_INTERVAL: ${THINK_FILLER_INTERVAL:-8.0}
+      # Deployment paths (container-internal; not in vivo.toml).
       MODEL_DIR: /models
       DATA_DIR: /data
       WORK_DIR: /workspace
+      # Every vivo.toml key can be overridden by its env var; unset (or empty)
+      # falls back to the file, then the built-in default. Set the ones you
+      # care about in a host .env — no need to edit this file.
+      LLM_BASE_URL: ${LLM_BASE_URL:-}
+      LLM_MODEL: ${LLM_MODEL:-}
+      PERSONA: ${PERSONA:-}
+      LLM_THINKING: ${LLM_THINKING:-}
+      LLM_MAX_TOKENS: ${LLM_MAX_TOKENS:-}
+      THINK_FILLER_FIRST_AFTER: ${THINK_FILLER_FIRST_AFTER:-}
+      THINK_FILLER_INTERVAL: ${THINK_FILLER_INTERVAL:-}
+      TTS_VOICE: ${TTS_VOICE:-}
+      TTS_SPEED: ${TTS_SPEED:-}
+      TTS_SENTENCE_PAUSE: ${TTS_SENTENCE_PAUSE:-}
+      SENTENCE_MAX_CHARS: ${SENTENCE_MAX_CHARS:-}
+      TTS_QUEUE_SIZE: ${TTS_QUEUE_SIZE:-}
+      STT_MODEL: ${STT_MODEL:-}
+      STT_COMPUTE_TYPE: ${STT_COMPUTE_TYPE:-}
+      VAD_THRESHOLD: ${VAD_THRESHOLD:-}
+      VAD_MIN_SILENCE_MS: ${VAD_MIN_SILENCE_MS:-}
+      VAD_REOPEN_MS: ${VAD_REOPEN_MS:-}
+      COMPACT_AFTER_CHARS: ${COMPACT_AFTER_CHARS:-}
+      KEEP_RECENT_TURNS: ${KEEP_RECENT_TURNS:-}
+      MAX_TOOL_ROUNDS: ${MAX_TOOL_ROUNDS:-}
+      EXEC_TIMEOUT: ${EXEC_TIMEOUT:-}
+      EXEC_MAX_OUTPUT: ${EXEC_MAX_OUTPUT:-}
+      BARGE_LEVEL_THRESHOLD: ${BARGE_LEVEL_THRESHOLD:-}
+      BARGE_SUSTAIN_MS: ${BARGE_SUSTAIN_MS:-}
+      BARGE_COOLDOWN_MS: ${BARGE_COOLDOWN_MS:-}
     volumes:
       - ./models:/models
       - ./data:/data
       - /home/rob/projects:/workspace
+      # Central config: edit on the host, then `docker compose restart vivo`.
+      - ./vivo.toml:/app/vivo.toml:ro
     extra_hosts:
       - "host.docker.internal:host-gateway"
     restart: unless-stopped

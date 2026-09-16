@@ -50,12 +50,14 @@ class Agent:
         max_tokens: int = DEFAULT_MAX_TOKENS,
         max_tool_rounds: int = DEFAULT_MAX_TOOL_ROUNDS,
         thinking: bool = False,
+        system_prompt: str = "",
         timeout: float = 120.0,
         client: Optional[httpx.Client] = None,
     ):
         self.base_url = base_url.rstrip("/")
         self.model = model
         self.persona = persona
+        self.system_prompt = system_prompt
         self.tools = tools
         self.thinking = thinking
         self.max_tokens = max_tokens
@@ -155,25 +157,10 @@ class Agent:
         ToolRound markers after executed tool rounds. `execute(name, args)
         -> str` runs a tool. `history` is prior OpenAI-style messages
         (system/user/assistant), e.g. from Conversation.messages()."""
-        messages = [
-            {
-                "role": "system",
-                "content": (
-                    f"{self.persona}\nYou are a hands-free voice assistant; your "
-                    "replies are spoken aloud. Keep replies to one or two short "
-                    "spoken sentences and summarise tool results in plain words; "
-                    "never read raw output, code, or lists aloud. You have a "
-                    "sandboxed shell (exec) and file tools (read_file, "
-                    "write_file, list_dir) in the workspace directory, current "
-                    "weather, web search, and web page reading. Prefer quick "
-                    "commands. Before a tool call that may take a while (search, "
-                    "fetch, long command), first say in a few words what you are "
-                    "doing. If a tool fails, try once differently, then say what "
-                    "went wrong. Earlier conversation context may be included; "
-                    "use it naturally and do not repeat it back."
-                ),
-            }
-        ]
+        system = self.persona
+        if self.system_prompt:
+            system = f"{self.persona}\n{self.system_prompt}"
+        messages = [{"role": "system", "content": system}]
         if history:
             messages.extend(history)
         messages.append({"role": "user", "content": user_text})

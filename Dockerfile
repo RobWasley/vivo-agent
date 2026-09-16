@@ -12,6 +12,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY app/ ./app/
 COPY static/ ./static/
 COPY tests/ ./tests/
+COPY vivo.toml ./
 
 RUN useradd -m appuser \
     && mkdir -p /models /data \

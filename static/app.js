@@ -13,10 +13,14 @@ const TARGET_PLAY_RATE = 24000;
 /* Auto barge-in: while vivo is speaking, sustained mic level above the
  * threshold (your voice, after the browser's echo cancellation) interrupts
  * the reply. micLevel is rms*6 clamped to [0,1], sampled per ~25 ms mic
- * callback; typical speech lands 0.3-1.0, post-AEC echo usually < 0.2. */
-const BARGE_LEVEL_THRESHOLD = 0.25;
-const BARGE_SUSTAIN_MS = 250; // level must stay above threshold this long
-const BARGE_COOLDOWN_MS = 700; // suppress re-triggers right after a barge
+ * callback; typical speech lands 0.3-1.0, post-AEC echo usually < 0.2.
+ * These are defaults only — the server sends its own values in the `config`
+ * handshake message (vivo.toml [barge_in]) and overrides them. */
+const BARGE_DEFAULTS = {
+  levelThreshold: 0.25,
+  sustainMs: 250, // level must stay above threshold this long
+  cooldownMs: 700, // suppress re-triggers right after a barge
+};
 
 const $ = (id) => document.getElementById(id);
 const el = {
@@ -44,6 +48,7 @@ const S = {
   playLevel: 0,
   currentVivoEntry: null,
   pingTimer: null,
+  bargeCfg: { ...BARGE_DEFAULTS }, // overridden by the server's `config` message
   bargePendingSince: null, // timestamp mic level started sustaining above threshold
   bargeCooldownUntil: 0, // suppress auto-barge re-triggers until this time
   dropAudio: false, // ignore in-flight TTS frames after a barge until the next `end`
@@ -244,7 +249,7 @@ function bargeIn() {
   if (!S.ws || S.ws.readyState !== WebSocket.OPEN) return;
   S.dropAudio = true; // TTS frames already in flight must not replay
   S.bargePendingSince = null;
-  S.bargeCooldownUntil = performance.now() + BARGE_COOLDOWN_MS;
+  S.bargeCooldownUntil = performance.now() + S.bargeCfg.cooldownMs;
   stopPlayback();
   sendJson({ type: "barge_in" });
 }
@@ -255,10 +260,10 @@ function checkAutoBarge() {
     S.bargePendingSince = null;
     return;
   }
-  if (S.micLevelTarget > BARGE_LEVEL_THRESHOLD) {
+  if (S.micLevelTarget > S.bargeCfg.levelThreshold) {
     if (S.bargePendingSince === null) {
       S.bargePendingSince = now;
-    } else if (now - S.bargePendingSince >= BARGE_SUSTAIN_MS) {
+    } else if (now - S.bargePendingSince >= S.bargeCfg.sustainMs) {
       bargeIn();
     }
   } else {
@@ -280,6 +285,16 @@ function readPlayLevel() {
 
 function handleServerJson(m) {
   switch (m.type) {
+    case "config":
+      // server-side barge-in timings (vivo.toml [barge_in])
+      if (m.barge_in) {
+        S.bargeCfg = {
+          levelThreshold: m.barge_in.level_threshold ?? S.bargeCfg.levelThreshold,
+          sustainMs: m.barge_in.sustain_ms ?? S.bargeCfg.sustainMs,
+          cooldownMs: m.barge_in.cooldown_ms ?? S.bargeCfg.cooldownMs,
+        };
+      }
+      return; // config never touches the status UI
     case "start":
       setPipeline("listening");
       break;

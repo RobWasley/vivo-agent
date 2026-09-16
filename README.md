@@ -59,14 +59,11 @@ FastAPI (uvicorn)
    ```
 
 3. Point it at your LLM if it isn't already. Defaults match llama.cpp on
-   `0.0.0.0:8080` with model `qwen3.8-27b`; to override, put a `.env` file
-   next to `docker-compose.yml`:
-
-   ```sh
-   LLM_BASE_URL=http://host.docker.internal:8080/v1
-   LLM_MODEL=qwen3.8-27b
-   PERSONA="You are vivo, a helpful voice assistant. Keep replies to one or two short spoken sentences."
-   ```
+   `0.0.0.0:8080` with model `qwen3.8-27b`. All tunables (LLM, persona,
+   voice, VAD, …) live in **`vivo.toml`** — edit it and `docker compose
+   restart vivo`. Env vars still win over the file, so a `.env` next to
+   `docker-compose.yml` (e.g. `LLM_BASE_URL=…`) remains the escape hatch;
+   see [Configuration](#configuration).
 
 4. Build and start:
 
@@ -91,27 +88,73 @@ Useful endpoints:
 
 ## Configuration
 
-All config is env vars (compose defaults in parentheses; set via a `.env`
-file or the `environment:` block):
+All tunables live in **`vivo.toml`** at the project root — edit it and run
+`docker compose restart vivo` (no rebuild; the file is mounted read-only).
+Every key keeps its historical env-var name and can be overridden by one:
+**env var > file > built-in default**. Set overrides in a `.env` file next to
+`docker-compose.yml` (or the `environment:` block); unset/empty env vars fall
+through to the file.
 
-| Var | Default | Purpose |
-|-----|---------|---------|
-| `LLM_BASE_URL` | `http://host.docker.internal:8080/v1` | llama.cpp OpenAI-compatible endpoint |
-| `LLM_MODEL` | `qwen3.8-27b` | Model name to request |
-| `PERSONA` | vivo | System-prompt persona (change it → different character) |
-| `LLM_THINKING` | `1` | Run the LLM in thinking mode (reasoning before the answer); `0` to disable |
-| `LLM_MAX_TOKENS` | `600` | Token cap per reply — thinking tokens count against it |
-| `THINK_FILLER_FIRST_AFTER` | `2.0` | Seconds of silence before vivo speaks the first filler phrase |
-| `THINK_FILLER_INTERVAL` | `8.0` | Seconds between repeat filler phrases while the silence goes on |
-| `COMPACT_AFTER_CHARS` | `12000` | History size (chars ≈ /4 tokens) that triggers background compaction |
-| `KEEP_RECENT_TURNS` | `4` | Turns kept verbatim after a compaction checkpoint |
-| `WORK_DIR` | `/workspace` | Sandbox root for `exec` cwd and the file tools |
-| `EXEC_TIMEOUT` | `60` | Default `exec` timeout in seconds (hard max 120) |
-| `EXEC_MAX_OUTPUT` | `8000` | `exec` output truncation (head + tail) in chars |
-| `SEARCH_MAX_RESULTS` | `5` | `web_search` result cap |
-| `FETCH_MAX_CHARS` | `6000` | `web_fetch` result cap (hard max 16000) |
-| `MODEL_DIR` | `/models` | Where models live (mounted `./models`) |
-| `DATA_DIR` | `/data` | App state (mounted `./data`), incl. conversation history |
+```toml
+# vivo.toml — every key, shown at its default (env-var name)
+[llm]
+base_url = "http://host.docker.internal:8080/v1"   # LLM_BASE_URL
+model = "qwen3.8-27b"                               # LLM_MODEL
+thinking = true                                      # LLM_THINKING
+max_tokens = 600                                     # LLM_MAX_TOKENS
+
+[persona]
+blurb = "You are vivo, a helpful voice assistant. …"  # PERSONA
+system_prompt = """…voice-UX rules, appended to the blurb…"""  # file only
+
+[filler]
+first_after_s = 2.0                                  # THINK_FILLER_FIRST_AFTER
+interval_s = 8.0                                     # THINK_FILLER_INTERVAL
+phrases = ["Let me think about that.", …]            # THINK_FILLER_PHRASES (comma-separated)
+
+[voice]
+tts_voice = "af_heart"          # TTS_VOICE — kokoro voice (see voices-v1.0.bin)
+tts_speed = 1.0                 # TTS_SPEED
+sentence_pause_s = 0.2          # TTS_SENTENCE_PAUSE
+sentence_max_chars = 90         # SENTENCE_MAX_CHARS — hard split without punctuation
+tts_queue_size = 2              # TTS_QUEUE_SIZE — LLM→TTS sentence queue bound
+
+[stt]
+model = "small"                 # STT_MODEL (tiny/base/small/medium/large-v3)
+compute_type = "int8"           # STT_COMPUTE_TYPE
+cpu_threads = 8                 # STT_CPU_THREADS
+language = "en"                 # STT_LANGUAGE
+beam_size = 1                   # STT_BEAM_SIZE
+
+[vad]
+threshold = 0.5                 # VAD_THRESHOLD — Silero speech probability
+min_speech_ms = 200             # VAD_MIN_SPEECH_MS
+min_silence_ms = 400            # VAD_MIN_SILENCE_MS
+reopen_ms = 600                 # VAD_REOPEN_MS — breath-tolerant endpoint (0 = classic)
+speech_pad_ms = 200             # VAD_SPEECH_PAD_MS
+max_speech_s = 30.0             # VAD_MAX_SPEECH_S
+
+[barge_in]                      # pushed to the browser over the WS handshake
+level_threshold = 0.25          # BARGE_LEVEL_THRESHOLD
+sustain_ms = 250                # BARGE_SUSTAIN_MS
+cooldown_ms = 700               # BARGE_COOLDOWN_MS
+
+[memory]
+compact_after_chars = 12000     # COMPACT_AFTER_CHARS (≈ /4 tokens)
+keep_recent_turns = 4           # KEEP_RECENT_TURNS
+
+[agent]
+max_tool_rounds = 8             # MAX_TOOL_ROUNDS
+exec_timeout_s = 60             # EXEC_TIMEOUT (hard max below)
+exec_max_timeout_s = 120        # EXEC_MAX_TIMEOUT
+exec_max_output_chars = 8000    # EXEC_MAX_OUTPUT
+search_max_results = 5          # SEARCH_MAX_RESULTS
+fetch_max_chars = 6000          # FETCH_MAX_CHARS (hard max 16000)
+```
+
+Deployment paths stay env-only in `docker-compose.yml` (container-internal):
+`MODEL_DIR=/models`, `DATA_DIR=/data`, `WORK_DIR=/workspace` (the sandbox
+root for `exec` cwd and the file tools), plus the port mapping.
 
 ## The agent
 
@@ -154,7 +197,11 @@ server runs: mic PCM (16 kHz) → Silero VAD endpointing → faster-whisper STT
 - `{"type":"barge_in"}` interrupts the active reply (stops speaking, aborts
   the LLM stream) and frees the mic immediately; a generation token ensures
   the interrupted worker can never send stale audio. While a reply is
-  playing, mic input is ignored (echo guard).
+  playing, mic input is ignored (echo guard) — except for **auto barge-in**:
+  the browser watches the mic level and sends `barge_in` on its own when your
+  voice (after the browser's echo cancellation) stays above a threshold long
+  enough. The timings are not hardcoded: the server pushes its
+  `[barge_in]` settings to the browser in a `config` message on connect.
 - Per-utterance latency is logged: `utterance 11.8s (stt 1.8s, first text
   5.6s, first audio 8.6s)`.
 
@@ -210,9 +257,10 @@ app/
   shell.py        sandboxed exec (deny patterns, tree kill, truncation)
   web.py          web_search (ddgs) + web_fetch (Jina reader)
   models.py       idempotent model download
-  config.py       env-var configuration
+  config.py       vivo.toml + env-var loader (env > file > default)
 static/           browser UI: wobbly canvas dot, mic capture, playback, sidebar
-tests/            unit + live WS pipeline tests (76)
+vivo.toml         central configuration (mounted read-only, env-overridable)
+tests/            unit + live WS pipeline tests (83)
 ```
 
 ## Tests
@@ -228,7 +276,8 @@ docker compose run --rm -w /app -e WS_URL=ws://vivo:8000/ws \
 
 Most tests run offline (fake LLM/TTS where needed); the agent, pipeline and
 compaction tests call the **live llama.cpp server**, so it must be up and
-reachable from the containers. The full suite is ~65 s. VAD/STT tests use a
+reachable from the containers. The full suite is ~46 s (up to ~65 s under
+LLM contention). VAD/STT tests use a
 real TTS speech fixture — synthetic tones do not reliably trigger Silero v6
 (see `NOTES.md`).
 

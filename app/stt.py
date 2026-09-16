@@ -17,12 +17,14 @@ class STT:
         download_root: str = "models",
         cpu_threads: int = 8,
         language: str = "en",
+        beam_size: int = 1,
     ):
         self.model_size = model_size
         self.compute_type = compute_type
         self.download_root = download_root
         self.cpu_threads = cpu_threads
         self.language = language
+        self.beam_size = beam_size
         self._model = None
         self.load_time: Optional[float] = None
 
@@ -50,7 +52,7 @@ class STT:
         segments, _info = model.transcribe(
             pcm,
             language=self.language,
-            beam_size=1,
+            beam_size=self.beam_size,
             vad_filter=False,
         )
         return " ".join(seg.text.strip() for seg in segments).strip()

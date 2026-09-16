@@ -1,0 +1,93 @@
+# vivo — central configuration
+#
+# Precedence: environment variable > this file > built-in default. Every key
+# keeps its historical env-var name (see README "Configuration"); deployment
+# paths (MODEL_DIR, DATA_DIR, WORK_DIR) and ports stay in docker-compose.yml.
+# Edit this file, then: docker compose restart vivo
+
+[llm]
+base_url = "http://host.docker.internal:8080/v1"
+model = "qwen3.8-27b"
+# Thinking mode: reasoning tokens stream before the spoken answer (filler
+# phrases cover the silence — see [filler]).
+thinking = true
+# Thinking tokens count against max_tokens; 300 was sized for answers only.
+max_tokens = 600
+
+[persona]
+# Shown as the first line of the system prompt.
+blurb = "You are vivo, a helpful voice assistant. Keep replies to one or two short spoken sentences."
+# Appended to the blurb. This is where vivo's voice-UX rules live.
+system_prompt = """
+You are a hands-free voice assistant; your replies are spoken aloud. Keep replies to one or two short spoken sentences and summarise tool results in plain words; never read raw output, code, or lists aloud. You have a sandboxed shell (exec) and file tools (read_file, write_file, list_dir) in the workspace directory, current weather, web search, and web page reading. Prefer quick commands. Before a tool call that may take a while (search, fetch, long command), first say in a few words what you are doing. If a tool fails, try once differently, then say what went wrong. Earlier conversation context may be included; use it naturally and do not repeat it back."""
+
+[filler]
+# After this much silence (no speakable text: prefill, reasoning, tool
+# rounds) vivo speaks a filler phrase; repeats every interval_s while the
+# silence goes on. Barge-in stops the filler with zero stale audio.
+first_after_s = 2.0
+interval_s = 8.0
+phrases = [
+  "Let me think about that.",
+  "Working on it.",
+  "One moment.",
+  "Hmm, give me a second.",
+  "Still thinking.",
+  "Let me work that out.",
+]
+
+[voice]
+# kokoro-onnx voice (see /models/kokoro/voices-v1.0.bin for the full list).
+tts_voice = "af_heart"
+tts_speed = 1.0
+# Pause inserted between sentences within one synthesis.
+sentence_pause_s = 0.2
+# Hard-split threshold (chars) when no punctuation boundary is found; bounds
+# first-audio latency on punctuation-poor LLM output.
+sentence_max_chars = 90
+# Bounded queue of sentences between LLM producer and TTS consumer.
+tts_queue_size = 2
+
+[stt]
+# faster-whisper model size: tiny, base, small, medium, large-v3...
+model = "small"
+compute_type = "int8"
+cpu_threads = 8
+language = "en"
+beam_size = 1
+
+[vad]
+# Silero v6 endpointing. An utterance goes *pending* after min_silence_ms of
+# silence; speech resuming within the additional reopen_ms (a breath pause)
+# continues the same utterance. Total silence before finalizing:
+# min_silence_ms + reopen_ms. reopen_ms = 0 for classic single-stage.
+threshold = 0.5
+min_speech_ms = 200
+min_silence_ms = 400
+reopen_ms = 600
+speech_pad_ms = 200
+max_speech_s = 30.0
+
+[barge_in]
+# UI auto barge-in: while vivo speaks, sustained mic level above
+# level_threshold (post-browser-echo-cancellation) for sustain_ms triggers a
+# barge; cooldown_ms suppresses immediate re-triggers. Sent to the client
+# over the WebSocket handshake; typical speech lands 0.3–1.0 on the 0–1
+# micLevel scale, post-AEC echo usually < 0.2.
+level_threshold = 0.25
+sustain_ms = 250
+cooldown_ms = 700
+
+[memory]
+# Compact conversation history once it grows past this many characters
+# (roughly /4 tokens), keeping the most recent turns verbatim.
+compact_after_chars = 12000
+keep_recent_turns = 4
+
+[agent]
+max_tool_rounds = 8
+exec_timeout_s = 60
+exec_max_timeout_s = 120
+exec_max_output_chars = 8000
+search_max_results = 5
+fetch_max_chars = 6000

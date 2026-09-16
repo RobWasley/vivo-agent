@@ -37,6 +37,9 @@ Protocol (JSON text frames unless noted):
     {"type":"flush"}      force-close an in-progress utterance
     {"type":"ping"}       -> {"type":"pong"}
   server -> client
+    {"type":"config","barge_in":{level_threshold,sustain_ms,cooldown_ms}}
+                                 sent on connect; UI auto-barge timings
+                                 (vivo.toml [barge_in])
     {"type":"start"}            VAD: speech started
     {"type":"end"}              VAD: utterance captured, processing begins
     {"type":"transcript","text"}
@@ -81,14 +84,8 @@ _TTS_DONE = None  # queue sentinel: no more sentences will be enqueued
 
 # Short spoken fillers for thinking gaps (T015). Kept to one brief clause so a
 # single synthesis stays short and the phrase reads naturally aloud.
-FILLER_PHRASES = (
-    "Let me think about that.",
-    "Working on it.",
-    "One moment.",
-    "Hmm, give me a second.",
-    "Still thinking.",
-    "Let me work that out.",
-)
+# Customisable via vivo.toml [filler] phrases / THINK_FILLER_PHRASES.
+FILLER_PHRASES = config.FILLER_PHRASES
 
 
 class SentenceChunker:
@@ -273,11 +270,25 @@ class Engines:
     """Shared, expensive engine singletons (one per process)."""
 
     def __init__(self) -> None:
-        self.stt = STT(download_root=config.MODEL_DIR)
-        self.tts = TTS(model_dir=config.MODEL_DIR)
+        self.stt = STT(
+            model_size=config.STT_MODEL,
+            compute_type=config.STT_COMPUTE_TYPE,
+            download_root=config.MODEL_DIR,
+            cpu_threads=config.STT_CPU_THREADS,
+            language=config.STT_LANGUAGE,
+            beam_size=config.STT_BEAM_SIZE,
+        )
+        self.tts = TTS(
+            model_dir=config.MODEL_DIR,
+            voice=config.TTS_VOICE,
+            speed=config.TTS_SPEED,
+            sentence_pause=config.TTS_SENTENCE_PAUSE,
+        )
         self.agent = Agent(
             config.LLM_BASE_URL, config.LLM_MODEL, config.PERSONA, tools=tools.TOOLS,
             thinking=config.LLM_THINKING, max_tokens=config.LLM_MAX_TOKENS,
+            max_tool_rounds=config.MAX_TOOL_ROUNDS,
+            system_prompt=config.SYSTEM_PROMPT,
         )
         self.conversation = Conversation(
             data_path=os.path.join(config.DATA_DIR, "conversation.json"),
@@ -297,8 +308,12 @@ class VoiceSession:
         self.engines = engines
         self.loop = asyncio.get_running_loop()
         self.vad = VAD(
+            threshold=config.VAD_THRESHOLD,
+            min_speech_ms=config.VAD_MIN_SPEECH_MS,
             min_silence_ms=config.VAD_MIN_SILENCE_MS,
             reopen_ms=config.VAD_REOPEN_MS,
+            speech_pad_ms=config.VAD_SPEECH_PAD_MS,
+            max_speech_s=config.VAD_MAX_SPEECH_S,
         )
         self.lock = threading.Lock()
         self.reply_active = False
@@ -548,6 +563,15 @@ def _on_audio(session: VoiceSession, data: bytes) -> None:
 
 async def serve_session(ws, engines: Engines) -> None:
     session = VoiceSession(ws, engines)
+    # UI tuning that used to be hardcoded in static/app.js (vivo.toml [barge_in]).
+    session.send({
+        "type": "config",
+        "barge_in": {
+            "level_threshold": config.BARGE_LEVEL_THRESHOLD,
+            "sustain_ms": config.BARGE_SUSTAIN_MS,
+            "cooldown_ms": config.BARGE_COOLDOWN_MS,
+        },
+    })
     try:
         while True:
             msg = await ws.receive()

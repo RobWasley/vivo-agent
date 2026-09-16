@@ -42,8 +42,9 @@ services:
       - ./models:/models
       - ./data:/data
       - /home/rob/projects:/workspace
-      # Central config: edit on the host, then `docker compose restart vivo`.
-      - ./vivo.toml:/app/vivo.toml:ro
+      # Central config: edit in the web settings pane (or on the host). UI
+      # saves rewrite it in place; env vars above still override it (T018/T019).
+      - ./vivo.toml:/app/vivo.toml
     extra_hosts:
       - "host.docker.internal:host-gateway"
     restart: unless-stopped

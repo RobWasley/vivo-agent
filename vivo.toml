@@ -1,93 +1,104 @@
-# vivo — central configuration
+# vivo settings (T018).
 #
-# Precedence: environment variable > this file > built-in default. Every key
-# keeps its historical env-var name (see README "Configuration"); deployment
-# paths (MODEL_DIR, DATA_DIR, WORK_DIR) and ports stay in docker-compose.yml.
-# Edit this file, then: docker compose restart vivo
+# Editable by hand or from the web settings pane (gear button). On save the
+# file is regenerated from these values; comments come from the schema.
+# Precedence at runtime: environment variable > this file > built-in default.
 
 [llm]
+# Language model
+# OpenAI-compatible endpoint serving the chat model (the llama.cpp server).
 base_url = "http://host.docker.internal:8080/v1"
+# Model name the LLM server serves, e.g. qwen3.8-27b.
 model = "qwen3.8-27b"
-# Thinking mode: reasoning tokens stream before the spoken answer (filler
-# phrases cover the silence — see [filler]).
+# Let the model reason before answering. Adds latency but improves answers, especially with tools. vivo speaks filler phrases while it thinks.
 thinking = true
-# Thinking tokens count against max_tokens; 300 was sized for answers only.
-max_tokens = 600
+# Generation budget per reply (thinking + answer together). Too low truncates answers; too high wastes latency.
+max_tokens = 608
 
 [persona]
-# Shown as the first line of the system prompt.
+# Persona & prompt
+# One or two sentences describing who vivo is. Prepended to the system prompt.
 blurb = "You are vivo, a helpful voice assistant. Keep replies to one or two short spoken sentences."
-# Appended to the blurb. This is where vivo's voice-UX rules live.
-system_prompt = """
-You are a hands-free voice assistant; your replies are spoken aloud. Keep replies to one or two short spoken sentences and summarise tool results in plain words; never read raw output, code, or lists aloud. You have a sandboxed shell (exec) and file tools (read_file, write_file, list_dir) in the workspace directory, current weather, web search, and web page reading. Prefer quick commands. Before a tool call that may take a while (search, fetch, long command), first say in a few words what you are doing. If a tool fails, try once differently, then say what went wrong. Earlier conversation context may be included; use it naturally and do not repeat it back."""
+# Voice-UX instructions appended to the persona: how to speak, when to use tools, how to summarise results.
+system_prompt = "You are a hands-free voice assistant; your replies are spoken aloud. Keep replies to one or two short spoken sentences and summarise tool results in plain words; never read raw output, code, or lists aloud. You have a sandboxed shell (exec) and file tools (read_file, write_file, list_dir) in the workspace directory, current weather, web search, and web page reading. Prefer quick commands. Before a tool call that may take a while (search, fetch, long command), first say in a few words what you are doing. If a tool fails, try once differently, then say what went wrong. Earlier conversation context may be included; use it naturally and do not repeat it back."
 
 [filler]
-# After this much silence (no speakable text: prefill, reasoning, tool
-# rounds) vivo speaks a filler phrase; repeats every interval_s while the
-# silence goes on. Barge-in stops the filler with zero stale audio.
-first_after_s = 2.0
-interval_s = 8.0
-phrases = [
-  "Let me think about that.",
-  "Working on it.",
-  "One moment.",
-  "Hmm, give me a second.",
-  "Still thinking.",
-  "Let me work that out.",
-]
+# Thinking fillers
+# How long vivo waits without speakable text before starting to fill the silence with a phrase.
+first_after_s = 2
+# Gap between repeated filler phrases while the model keeps thinking.
+interval_s = 8
+# Short phrases vivo speaks while thinking, one per line. Keep them brief — each one is synthesised separately.
+phrases = ["Let me think about that.", "Working on it.", "One moment.", "Hmm, give me a second.", "Still thinking.", "Let me work that out."]
 
 [voice]
-# kokoro-onnx voice (see /models/kokoro/voices-v1.0.bin for the full list).
-tts_voice = "af_heart"
-tts_speed = 1.0
-# Pause inserted between sentences within one synthesis.
+# Voice (TTS)
+# Kokoro voice used for all speech.
+tts_voice = "af_nova"
+# Speech rate multiplier: 1.0 is natural, higher is faster.
+tts_speed = 1
+# Silence inserted between sentences within one synthesis.
 sentence_pause_s = 0.2
-# Hard-split threshold (chars) when no punctuation boundary is found; bounds
-# first-audio latency on punctuation-poor LLM output.
+# Hard split for long unpunctuated text. Shorter means the first audio arrives sooner at the cost of choppier phrasing.
 sentence_max_chars = 90
-# Bounded queue of sentences between LLM producer and TTS consumer.
+# Sentences buffered between the LLM and TTS. Bigger hides TTS hiccups, smaller cuts latency.
 tts_queue_size = 2
 
 [stt]
-# faster-whisper model size: tiny, base, small, medium, large-v3...
+# Speech-to-text
+# faster-whisper model. Bigger is more accurate but slower to transcribe and slower to load.
 model = "small"
+# Precision for inference. int8 is the fast CPU default; float16 and int8_float16 need a GPU.
 compute_type = "int8"
+# Threads used for transcription.
 cpu_threads = 8
+# Transcription language code (en, de, fr, …).
 language = "en"
+# Search width: 1 (greedy) is fastest; higher is slightly more accurate.
 beam_size = 1
 
 [vad]
-# Silero v6 endpointing. An utterance goes *pending* after min_silence_ms of
-# silence; speech resuming within the additional reopen_ms (a breath pause)
-# continues the same utterance. Total silence before finalizing:
-# min_silence_ms + reopen_ms. reopen_ms = 0 for classic single-stage.
+# Voice activity detection
+# Level above which audio counts as speech. Raise it if ambient noise triggers vivo, lower it if she misses quiet speech.
 threshold = 0.5
+# Shortest burst of sound kept as speech; shorter blips are ignored.
 min_speech_ms = 200
-min_silence_ms = 400
+# Silence that puts an utterance on pause.
+min_silence_ms = 2900
+# Extra silence an utterance survives: speech resuming within this window continues the same utterance (breath pauses). 0 disables it.
 reopen_ms = 600
+# Context added around each captured utterance.
 speech_pad_ms = 200
-max_speech_s = 30.0
+# Hard cap on a single utterance; longer speech is cut off and processed.
+max_speech_s = 30
 
 [barge_in]
-# UI auto barge-in: while vivo speaks, sustained mic level above
-# level_threshold (post-browser-echo-cancellation) for sustain_ms triggers a
-# barge; cooldown_ms suppresses immediate re-triggers. Sent to the client
-# over the WebSocket handshake; typical speech lands 0.3–1.0 on the 0–1
-# micLevel scale, post-AEC echo usually < 0.2.
+# Barge-in (UI)
+# While vivo is speaking, sustained mic level above this interrupts her. The browser's echo cancellation has already removed her own voice.
 level_threshold = 0.25
+# How long the mic level must stay above the threshold before it interrupts.
 sustain_ms = 250
+# Grace period after a barge-in before another one can trigger.
 cooldown_ms = 700
 
 [memory]
-# Compact conversation history once it grows past this many characters
-# (roughly /4 tokens), keeping the most recent turns verbatim.
+# Conversation memory
+# Once the conversation history grows past this, older turns are summarised to keep the context small.
 compact_after_chars = 12000
+# How many recent turns stay verbatim during compaction.
 keep_recent_turns = 4
 
 [agent]
+# Agent tools
+# How many tool-call rounds one reply may use before it must end with an answer.
 max_tool_rounds = 8
+# Default timeout for shell commands.
 exec_timeout_s = 60
+# Longest command timeout the model may request.
 exec_max_timeout_s = 120
+# Command output longer than this is truncated before it reaches the model.
 exec_max_output_chars = 8000
+# Maximum web-search results returned per query.
 search_max_results = 5
+# Maximum characters read from a web page.
 fetch_max_chars = 6000

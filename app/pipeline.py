@@ -38,8 +38,8 @@ Protocol (JSON text frames unless noted):
     {"type":"ping"}       -> {"type":"pong"}
   server -> client
     {"type":"config","barge_in":{level_threshold,sustain_ms,cooldown_ms}}
-                                 sent on connect; UI auto-barge timings
-                                 (vivo.toml [barge_in])
+                                  sent on connect and after settings are saved
+                                  (T019); UI auto-barge timings (vivo.toml [barge_in])
     {"type":"start"}            VAD: speech started
     {"type":"end"}              VAD: utterance captured, processing begins
     {"type":"transcript","text"}
@@ -71,7 +71,7 @@ import time
 
 import numpy as np
 
-from app import config, tools
+from app import config, shell, tools
 from app.agent import Agent, ReasoningDelta, ToolRound
 from app.conversation import Conversation
 from app.stt import STT
@@ -298,6 +298,38 @@ class Engines:
 
     def close(self) -> None:
         self.agent.close()
+
+
+def apply_config(engines: Engines) -> None:
+    """Hot-apply the current config to the live engines (T019).
+
+    Called after a settings save, once config.refresh() has re-read the
+    file. Values read per call (filler timings, exec/web limits) pick up
+    automatically; this patches the instances that captured theirs at
+    startup. STT model/compute/threads need a restart (the model loads
+    once); VAD and chunker settings apply to new connections/utterances.
+    """
+    global FILLER_PHRASES
+    a = engines.agent
+    a.base_url = config.LLM_BASE_URL.rstrip("/")
+    a.model = config.LLM_MODEL
+    a.persona = config.PERSONA
+    a.system_prompt = config.SYSTEM_PROMPT
+    a.thinking = config.LLM_THINKING
+    a.max_tokens = config.LLM_MAX_TOKENS
+    a.max_tool_rounds = config.MAX_TOOL_ROUNDS
+    t = engines.tts
+    t.voice = config.TTS_VOICE
+    t.speed = config.TTS_SPEED
+    t.sentence_pause = config.TTS_SENTENCE_PAUSE
+    s = engines.stt
+    s.language = config.STT_LANGUAGE
+    s.beam_size = config.STT_BEAM_SIZE
+    c = engines.conversation
+    c.compact_after_chars = config.COMPACT_AFTER_CHARS
+    c.keep_recent_turns = config.KEEP_RECENT_TURNS
+    shell.MAX_TIMEOUT = config.EXEC_MAX_TIMEOUT  # shell.py snapshots it at import
+    FILLER_PHRASES = config.FILLER_PHRASES  # ThinkingFiller reads the module global
 
 
 class VoiceSession:
@@ -561,17 +593,34 @@ def _on_audio(session: VoiceSession, data: bytes) -> None:
             session.start_utterance(ev.samples)
 
 
-async def serve_session(ws, engines: Engines) -> None:
-    session = VoiceSession(ws, engines)
-    # UI tuning that used to be hardcoded in static/app.js (vivo.toml [barge_in]).
-    session.send({
+_ACTIVE: set[VoiceSession] = set()
+
+
+def barge_config_msg() -> dict:
+    """The `config` handshake frame (vivo.toml [barge_in])."""
+    return {
         "type": "config",
         "barge_in": {
             "level_threshold": config.BARGE_LEVEL_THRESHOLD,
             "sustain_ms": config.BARGE_SUSTAIN_MS,
             "cooldown_ms": config.BARGE_COOLDOWN_MS,
         },
-    })
+    }
+
+
+def broadcast_config() -> None:
+    """Re-send the `config` handshake to every open session (T019)."""
+    msg = barge_config_msg()
+    for s in list(_ACTIVE):
+        if not s.closed:
+            s.send(msg)
+
+
+async def serve_session(ws, engines: Engines) -> None:
+    session = VoiceSession(ws, engines)
+    _ACTIVE.add(session)
+    # UI tuning that used to be hardcoded in static/app.js (vivo.toml [barge_in]).
+    session.send(barge_config_msg())
     try:
         while True:
             msg = await ws.receive()
@@ -601,5 +650,6 @@ async def serve_session(ws, engines: Engines) -> None:
             elif kind == "ping":
                 session.send({"type": "pong"})
     finally:
+        _ACTIVE.discard(session)
         session.closed = True
         log.info("session closed")

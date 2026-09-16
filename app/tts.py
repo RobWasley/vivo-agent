@@ -45,6 +45,11 @@ class TTS:
             self.load_time = time.monotonic() - t0
         return self._engine
 
+    def voices(self) -> list[str]:
+        """All voice names available in the voices file (T019 settings pane)."""
+        engine = self._load()
+        return sorted(engine.get_voices())
+
     def synthesize(self, text: str) -> np.ndarray:
         """Synthesize one piece of text -> float32 mono PCM @ 24 kHz."""
         text = text.strip()

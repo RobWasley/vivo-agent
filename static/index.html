@@ -45,8 +45,23 @@
     <button class="primary" id="btn-start">start</button>
     <button id="btn-barage" title="Interrupt me now">barage in</button>
     <button class="ghost" id="btn-flush" title="Finish the current utterance">flush</button>
+    <button class="ghost" id="btn-settings" title="Settings">settings</button>
     <span class="hint" id="hint">mic off &middot; click <b>start</b> to allow the microphone</span>
   </footer>
+
+  <dialog id="settings" class="settings">
+    <div class="settings-head">
+      <h2>Settings</h2>
+      <button class="ghost" id="btn-settings-x" title="Close">&times;</button>
+    </div>
+    <div class="settings-body" id="settings-body"></div>
+    <div class="settings-foot">
+      <span class="settings-msg" id="settings-msg"></span>
+      <span class="settings-spacer"></span>
+      <button class="ghost" id="btn-settings-close">close</button>
+      <button class="primary" id="btn-settings-save">save</button>
+    </div>
+  </dialog>
 
   <script src="app.js"></script>
 </body>

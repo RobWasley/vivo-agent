@@ -60,8 +60,10 @@ FastAPI (uvicorn)
 
 3. Point it at your LLM if it isn't already. Defaults match llama.cpp on
    `0.0.0.0:8080` with model `qwen3.8-27b`. All tunables (LLM, persona,
-   voice, VAD, …) live in **`vivo.toml`** — edit it and `docker compose
-   restart vivo`. Env vars still win over the file, so a `.env` next to
+   voice, VAD, …) live in **`vivo.toml`** — or just in the web UI: the
+   **settings** button opens a pane for every setting (tooltips, sliders,
+   voice dropdown); saving writes `vivo.toml` and applies what it can
+   without a restart. Env vars still win over the file, so a `.env` next to
    `docker-compose.yml` (e.g. `LLM_BASE_URL=…`) remains the escape hatch;
    see [Configuration](#configuration).
 
@@ -88,12 +90,34 @@ Useful endpoints:
 
 ## Configuration
 
-All tunables live in **`vivo.toml`** at the project root — edit it and run
-`docker compose restart vivo` (no rebuild; the file is mounted read-only).
-Every key keeps its historical env-var name and can be overridden by one:
-**env var > file > built-in default**. Set overrides in a `.env` file next to
+All tunables live in **`vivo.toml`** at the project root. Every key keeps its
+historical env-var name and can be overridden by one: **env var > file >
+built-in default**. Set overrides in a `.env` file next to
 `docker-compose.yml` (or the `environment:` block); unset/empty env vars fall
 through to the file.
+
+### Settings pane (UI)
+
+The **settings** button in the UI footer opens a modal rendered entirely from
+the server's schema (`GET /api/config`), so it always matches what the code
+understands. Controls are typed: sliders for numerics (with a live value
+readout), dropdowns for enums and the kokoro voice list (fetched from the
+loaded model, `Kokoro.get_voices()`), checkboxes, and textareas for the filler
+phrases and prompts. Each row carries a `(?)` tooltip and an **apply** badge —
+`live` (takes effect immediately, even mid-reply), `next session` (next
+utterance/connection), or `restart` (needs a container restart).
+
+**Save** POSTs the whole snapshot to `POST /api/config`. The server validates
+it against the schema (a `400` lists every problem), rewrites `vivo.toml` on
+the host (the file is mounted read-write), reloads the config, hot-applies the
+live-applicable values to the running engines, and re-broadcasts the
+`[barge_in]` `config` frame to every open WebSocket so connected browsers
+pick up new barge timings without a reload. Values that need a restart (STT
+model/compute/threads) are written but take effect on the next
+`docker compose up`.
+
+Hand-editing the file still works — it's the same source of truth — but the
+pane is the low-friction path.
 
 ```toml
 # vivo.toml — every key, shown at its default (env-var name)
@@ -258,9 +282,10 @@ app/
   web.py          web_search (ddgs) + web_fetch (Jina reader)
   models.py       idempotent model download
   config.py       vivo.toml + env-var loader (env > file > default)
-static/           browser UI: wobbly canvas dot, mic capture, playback, sidebar
-vivo.toml         central configuration (mounted read-only, env-overridable)
-tests/            unit + live WS pipeline tests (83)
+  config_schema.py  typed schema: pane, validation, file comments, write-back
+static/           browser UI: wobbly canvas dot, mic capture, playback, sidebar, settings pane
+vivo.toml         central configuration (rewritten by the settings pane, env-overridable)
+tests/            unit + live WS pipeline tests (95)
 ```
 
 ## Tests

@@ -33,6 +33,13 @@ const el = {
   btnBarage: $("btn-barage"),
   btnFlush: $("btn-flush"),
   btnClear: $("btn-clear"),
+  btnSettings: $("btn-settings"),
+  settingsDlg: $("settings"),
+  settingsBody: $("settings-body"),
+  settingsMsg: $("settings-msg"),
+  btnSettingsSave: $("btn-settings-save"),
+  btnSettingsClose: $("btn-settings-close"),
+  btnSettingsX: $("btn-settings-x"),
   hint: $("hint"),
 };
 
@@ -482,6 +489,187 @@ function frame() {
   requestAnimationFrame(frame);
 }
 
+/* ---------------- settings pane (T019) ----------------
+ * Rendered entirely from the server's schema (GET /api/config): sliders for
+ * numerics, dropdowns for enum/voice, checkboxes, textareas for phrases.
+ * Saving POSTs the whole snapshot; the server validates, rewrites vivo.toml,
+ * hot-applies what it can, and re-sends the `config` WS frame to open tabs.
+ */
+
+const APPLY_LABELS = { now: "live", next: "next session", restart: "restart" };
+const APPLY_TIPS = {
+  now: "Applies immediately, even mid-reply",
+  next: "Applies from the next utterance or connection",
+  restart: "Needs a container restart",
+};
+
+const settings = { values: null, schema: null, voices: [] };
+let settingsMsgTimer = null;
+
+function flashSettingsMsg(text, isError) {
+  el.settingsMsg.textContent = text;
+  el.settingsMsg.className = "settings-msg" + (isError ? " err" : " ok");
+  if (settingsMsgTimer) clearTimeout(settingsMsgTimer);
+  settingsMsgTimer = setTimeout(() => {
+    el.settingsMsg.textContent = "";
+    el.settingsMsg.className = "settings-msg";
+  }, 3000);
+}
+
+async function openSettings() {
+  el.settingsMsg.textContent = "";
+  el.settingsMsg.className = "settings-msg";
+  el.settingsBody.innerHTML = '<p class="settings-msg">Loading…</p>';
+  el.settingsDlg.showModal();
+  let j;
+  try {
+    const res = await fetch("/api/config");
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    j = await res.json();
+  } catch (err) {
+    el.settingsBody.innerHTML =
+      `<p class="settings-msg err">could not load settings: ${escapeHtml(err.message)}</p>`;
+    return;
+  }
+  settings.values = j.values;
+  settings.schema = j.schema;
+  settings.voices = j.voices;
+  el.settingsBody.innerHTML = "";
+  for (const [sec, spec] of Object.entries(j.schema)) {
+    const section = document.createElement("section");
+    section.className = "ssection";
+    const h = document.createElement("h3");
+    h.textContent = spec.title;
+    section.appendChild(h);
+    for (const [key, k] of Object.entries(spec.keys)) {
+      section.appendChild(buildSettingRow(sec, key, k));
+    }
+    el.settingsBody.appendChild(section);
+  }
+}
+
+function buildSettingRow(sec, key, k) {
+  const value = settings.values[sec][key];
+  const row = document.createElement("div");
+  row.className = "srow";
+  row.dataset.sec = sec;
+  row.dataset.key = key;
+  row.dataset.type = k.type;
+
+  const label = document.createElement("div");
+  label.className = "slabel";
+  const name = document.createElement("span");
+  name.textContent = k.label;
+  label.appendChild(name);
+  const tip = document.createElement("span");
+  tip.className = "tip";
+  tip.dataset.tip = k.help || "";
+  tip.textContent = "?";
+  label.appendChild(tip);
+  const badge = document.createElement("span");
+  badge.className = `sapply sapply-${k.apply}`;
+  badge.textContent = APPLY_LABELS[k.apply] || k.apply;
+  badge.title = APPLY_TIPS[k.apply] || k.apply;
+  label.appendChild(badge);
+  row.appendChild(label);
+
+  const ctrlWrap = document.createElement("div");
+  ctrlWrap.className = "sctrl";
+  ctrlWrap.appendChild(buildControl(k, value));
+  row.appendChild(ctrlWrap);
+  return row;
+}
+
+function buildControl(k, value) {
+  if (k.type === "int" || k.type === "float") {
+    const range = document.createElement("input");
+    range.type = "range";
+    range.min = k.min;
+    range.max = k.max;
+    range.step = k.step;
+    range.value = value;
+    const val = document.createElement("span");
+    val.className = "sval";
+    val.textContent = value;
+    range.addEventListener("input", () => { val.textContent = range.value; });
+    const wrap = document.createElement("div");
+    wrap.className = "srange";
+    wrap.appendChild(range);
+    wrap.appendChild(val);
+    return wrap;
+  }
+  if (k.type === "bool") {
+    const box = document.createElement("input");
+    box.type = "checkbox";
+    box.checked = !!value;
+    return box;
+  }
+  if (k.type === "choices" || k.type === "voices") {
+    const sel = document.createElement("select");
+    const opts = k.type === "voices" ? [...settings.voices] : [...k.choices];
+    if (!opts.includes(value)) opts.unshift(value);
+    for (const o of opts) {
+      const opt = document.createElement("option");
+      opt.value = o;
+      opt.textContent = o;
+      if (o === value) opt.selected = true;
+      sel.appendChild(opt);
+    }
+    return sel;
+  }
+  if (k.type === "textarea" || k.type === "str[]") {
+    const ta = document.createElement("textarea");
+    ta.rows = k.type === "str[]" ? 4 : 2;
+    ta.value = k.type === "str[]" ? value.join("\n") : value;
+    return ta;
+  }
+  const inp = document.createElement("input");
+  inp.type = "text";
+  inp.value = value;
+  return inp;
+}
+
+function readSettingRow(row) {
+  const t = row.dataset.type;
+  const c = row.querySelector("input, select, textarea");
+  if (t === "int") return Math.round(Number(c.value));
+  if (t === "float") return Number(c.value);
+  if (t === "bool") return c.checked;
+  if (t === "str[]") return c.value.split("\n").map((s) => s.trim()).filter(Boolean);
+  return c.value;
+}
+
+async function saveSettings() {
+  if (!settings.schema) return;
+  const values = {};
+  for (const [sec, spec] of Object.entries(settings.schema)) {
+    values[sec] = {};
+    for (const key of Object.keys(spec.keys)) {
+      const row = el.settingsBody.querySelector(`.srow[data-sec="${sec}"][data-key="${key}"]`);
+      values[sec][key] = readSettingRow(row);
+    }
+  }
+  el.btnSettingsSave.disabled = true;
+  try {
+    const res = await fetch("/api/config", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ values }),
+    });
+    const j = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      const detail = Array.isArray(j.detail) ? j.detail.join("; ") : j.detail || `HTTP ${res.status}`;
+      throw new Error(detail);
+    }
+    settings.values = j.values;
+    flashSettingsMsg("saved — written to vivo.toml");
+  } catch (err) {
+    flashSettingsMsg(`save failed: ${err.message}`, true);
+  } finally {
+    el.btnSettingsSave.disabled = false;
+  }
+}
+
 /* ---------------- wiring ---------------- */
 
 el.btnStart.addEventListener("click", async () => {
@@ -501,6 +689,15 @@ el.btnFlush.addEventListener("click", () => sendJson({ type: "flush" }));
 el.btnClear.addEventListener("click", () => {
   el.transcript.innerHTML = "";
   S.currentVivoEntry = null;
+});
+
+el.btnSettings.addEventListener("click", openSettings);
+el.btnSettingsSave.addEventListener("click", saveSettings);
+const closeSettings = () => el.settingsDlg.close();
+el.btnSettingsClose.addEventListener("click", closeSettings);
+el.btnSettingsX.addEventListener("click", closeSettings);
+el.settingsDlg.addEventListener("click", (ev) => {
+  if (ev.target === el.settingsDlg) closeSettings(); // backdrop click
 });
 
 window.addEventListener("resize", resizeCanvas);

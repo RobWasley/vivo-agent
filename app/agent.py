@@ -1,6 +1,8 @@
 """Smol agent: hand-rolled tool loop against llama.cpp v1.
 
-- non-thinking per request: chat_template_kwargs={"enable_thinking": false}
+- per-request thinking toggle: chat_template_kwargs={"enable_thinking": ...};
+  with thinking on, reasoning tokens stream before the spoken answer and are
+  surfaced as ReasoningDelta (never spoken, never stored)
 - streaming: final answer deltas are yielded live (sentence-chunked TTS
   downstream can start before the full reply is generated)
 - tool calls are executed internally (in parallel within a round) and the
@@ -25,6 +27,19 @@ class ToolRound:
     """Control signal: a round ended with tool calls (already executed)."""
 
 
+class ReasoningDelta:
+    """Control signal: a chunk of model reasoning (thinking) streamed before
+    the spoken answer. Never spoken, never stored in history."""
+
+    __slots__ = ("text",)
+
+    def __init__(self, text: str) -> None:
+        self.text = text
+
+    def __repr__(self) -> str:
+        return f"ReasoningDelta({self.text!r})"
+
+
 class Agent:
     def __init__(
         self,
@@ -34,6 +49,7 @@ class Agent:
         tools: Optional[List[dict]] = None,
         max_tokens: int = DEFAULT_MAX_TOKENS,
         max_tool_rounds: int = DEFAULT_MAX_TOOL_ROUNDS,
+        thinking: bool = False,
         timeout: float = 120.0,
         client: Optional[httpx.Client] = None,
     ):
@@ -41,6 +57,7 @@ class Agent:
         self.model = model
         self.persona = persona
         self.tools = tools
+        self.thinking = thinking
         self.max_tokens = max_tokens
         self.max_tool_rounds = max_tool_rounds
         self.client = client or httpx.Client(timeout=timeout)
@@ -62,7 +79,7 @@ class Agent:
             "messages": messages,
             "stream": True,
             "max_tokens": self.max_tokens,
-            "chat_template_kwargs": {"enable_thinking": False},
+            "chat_template_kwargs": {"enable_thinking": self.thinking},
         }
         if self.tools:
             payload["tools"] = self.tools
@@ -70,8 +87,9 @@ class Agent:
         return payload
 
     def _stream_once(self, messages: List[dict]):
-        """One completion. Yields (kind, value) where kind is 'text' or
-        'tool_calls' (final list at end of stream)."""
+        """One completion. Yields (kind, value) where kind is 'reasoning'
+        (thinking deltas, when enabled), 'text', or 'tool_calls' (final list
+        at end of stream)."""
         content_parts: List[str] = []
         tool_ids: Dict[int, str] = {}
         tool_names: Dict[int, str] = {}
@@ -97,6 +115,11 @@ class Agent:
                 if not choices:
                     continue
                 delta = choices[0].get("delta") or {}
+                # Reasoning streams in `reasoning` (llama.cpp) or
+                # `reasoning_content` (OpenAI-style servers); never spoken.
+                reasoning = delta.get("reasoning") or delta.get("reasoning_content")
+                if reasoning:
+                    yield "reasoning", reasoning
                 text = delta.get("content")
                 if text:
                     content_parts.append(text)
@@ -160,6 +183,8 @@ class Agent:
             for kind, value in self._stream_once(messages):
                 if kind == "text":
                     yield value
+                elif kind == "reasoning":
+                    yield ReasoningDelta(value)
                 else:
                     tool_calls = value
             if not tool_calls or rounds >= self.max_tool_rounds:

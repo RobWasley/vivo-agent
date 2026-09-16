@@ -9,6 +9,16 @@ PERSONA = os.environ.get(
 MODEL_DIR = os.environ.get("MODEL_DIR", "models")
 DATA_DIR = os.environ.get("DATA_DIR", "data")
 
+# Thinking (T015): run the LLM in thinking mode (reasoning tokens stream
+# before the spoken answer). While no speakable text has been generated for
+# THINK_FILLER_FIRST_AFTER seconds the pipeline speaks a short filler phrase,
+# and repeats every THINK_FILLER_INTERVAL seconds while the silence goes on.
+LLM_THINKING = os.environ.get("LLM_THINKING", "1") == "1"
+# Thinking tokens count against max_tokens; 300 was only sized for the answer.
+LLM_MAX_TOKENS = int(os.environ.get("LLM_MAX_TOKENS", "600"))
+THINK_FILLER_FIRST_AFTER = float(os.environ.get("THINK_FILLER_FIRST_AFTER", "2.0"))
+THINK_FILLER_INTERVAL = float(os.environ.get("THINK_FILLER_INTERVAL", "8.0"))
+
 AUDIO_SAMPLE_RATE = 16000
 TTS_SAMPLE_RATE = 24000
 
@@ -29,3 +39,19 @@ EXEC_MAX_OUTPUT = int(os.environ.get("EXEC_MAX_OUTPUT", "8000"))
 # Web tools.
 SEARCH_MAX_RESULTS = int(os.environ.get("SEARCH_MAX_RESULTS", "5"))
 FETCH_MAX_CHARS = int(os.environ.get("FETCH_MAX_CHARS", "6000"))
+
+# LLM/TTS decoupling (T014): bounded per-reply queue of sentences between the
+# LLM producer and the single TTS consumer — how many may await synthesis while
+# the LLM keeps generating.
+TTS_QUEUE_SIZE = int(os.environ.get("TTS_QUEUE_SIZE", "2"))
+# SentenceChunker hard-split threshold (chars) when no punctuation boundary is
+# found: bounds first-audio latency on punctuation-poor LLM output (T014).
+SENTENCE_MAX_CHARS = int(os.environ.get("SENTENCE_MAX_CHARS", "90"))
+
+# VAD endpointing (breath-tolerant, two-stage): an utterance goes *pending*
+# after VAD_MIN_SILENCE_MS of silence; speech resuming within the additional
+# VAD_REOPEN_MS (a breath pause) continues the same utterance. Total silence
+# before an utterance is finalized: min_silence + reopen (1000 ms default —
+# the cost of not cutting off mid-sentence at every turn).
+VAD_MIN_SILENCE_MS = int(os.environ.get("VAD_MIN_SILENCE_MS", "400"))
+VAD_REOPEN_MS = int(os.environ.get("VAD_REOPEN_MS", "600"))

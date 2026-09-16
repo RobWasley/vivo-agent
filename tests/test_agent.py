@@ -2,7 +2,7 @@ import json
 import time
 
 from app import config, tools
-from app.agent import Agent, ToolRound
+from app.agent import Agent, ReasoningDelta, ToolRound
 
 
 def _sse(*events):
@@ -21,6 +21,10 @@ def _tool_calls_delta(calls):
              "function": {"name": name, "arguments": args}}
         )
     return {"choices": [{"delta": {"tool_calls": tcs}}]}
+
+
+def _reasoning_delta(text, key="reasoning"):
+    return {"choices": [{"delta": {key: text}}]}
 
 
 class FakeStreamResult:
@@ -85,6 +89,24 @@ def test_no_thinking_and_tool_roundtrip():
                 rounds += 1
     text = "".join(chunks).strip()
     assert rounds >= 1, "expected at least one tool round-trip"
+    assert text, "final answer was empty"
+    low = text.lower()
+    assert "<think" not in low and "think>" not in low, f"thinking leaked: {text!r}"
+
+
+def test_thinking_mode_streams_reasoning_live():
+    """Live: with thinking on, reasoning streams before the spoken answer and
+    never leaks into it."""
+    with Agent(
+        config.LLM_BASE_URL, config.LLM_MODEL, config.PERSONA,
+        tools=tools.TOOLS, thinking=True,
+    ) as agent:
+        items = list(agent.reply(
+            "What is 17 times 24? Answer with the number only.", tools.execute
+        ))
+    reasoning = "".join(i.text for i in items if isinstance(i, ReasoningDelta))
+    text = "".join(i for i in items if isinstance(i, str)).strip()
+    assert reasoning, "thinking mode streamed no reasoning deltas"
     assert text, "final answer was empty"
     low = text.lower()
     assert "<think" not in low and "think>" not in low, f"thinking leaked: {text!r}"
@@ -187,3 +209,76 @@ def test_summarize_is_non_streaming_without_tools():
     assert "tools" not in payload
     assert payload["messages"][0]["role"] == "system"
     assert payload["messages"][1] == {"role": "user", "content": "hi"}
+
+
+def test_thinking_toggle_in_payload():
+    on = FakeClient(streams=[_sse(_text_delta("hi"))])
+    list(Agent("http://x/v1", "m", "P", client=on, thinking=True).reply(
+        "hello", lambda n, a: "r"
+    ))
+    assert on.payloads[0]["chat_template_kwargs"] == {"enable_thinking": True}
+
+    off = FakeClient(streams=[_sse(_text_delta("hi"))])
+    list(Agent("http://x/v1", "m", "P", client=off).reply("hello", lambda n, a: "r"))
+    assert off.payloads[0]["chat_template_kwargs"] == {"enable_thinking": False}
+
+
+def test_reasoning_deltas_surfaced_separately_from_text():
+    client = FakeClient(
+        streams=[
+            _sse(
+                _reasoning_delta("hmm "),
+                _reasoning_delta("let me think."),
+                _text_delta("the answer"),
+            )
+        ]
+    )
+    agent = Agent("http://x/v1", "m", "P", client=client, thinking=True)
+    items = list(agent.reply("why?", lambda n, a: "r"))
+    reasoning = [i.text for i in items if isinstance(i, ReasoningDelta)]
+    assert reasoning == ["hmm ", "let me think."]
+    # spoken text stays clean: no reasoning mixed into the str deltas
+    assert [i for i in items if isinstance(i, str)] == ["the answer"]
+    assert not any("hmm" in i for i in items if isinstance(i, str))
+
+
+def test_reasoning_content_key_also_surfaced():
+    client = FakeClient(
+        streams=[
+            _sse(
+                _reasoning_delta("openai-style", key="reasoning_content"),
+                _text_delta("ok"),
+            )
+        ]
+    )
+    agent = Agent("http://x/v1", "m", "P", client=client, thinking=True)
+    items = list(agent.reply("why?", lambda n, a: "r"))
+    assert [i.text for i in items if isinstance(i, ReasoningDelta)] == [
+        "openai-style"
+    ]
+    assert [i for i in items if isinstance(i, str)] == ["ok"]
+
+
+def test_reasoning_across_tool_rounds_stays_separate():
+    """Thinking before a tool round and before the final answer must both be
+    surfaced as ReasoningDelta, with ToolRound markers intact."""
+    client = FakeClient(
+        streams=[
+            _sse(
+                _reasoning_delta("need the time."),
+                _tool_calls_delta([("c1", "slow", "{}")]),
+            ),
+            _sse(
+                _reasoning_delta("now to answer."),
+                _text_delta("done"),
+            ),
+        ]
+    )
+    agent = Agent("http://x/v1", "m", "P", client=client, thinking=True)
+    items = list(agent.reply("go", lambda n, a: "ok"))
+    assert [i.text for i in items if isinstance(i, ReasoningDelta)] == [
+        "need the time.",
+        "now to answer.",
+    ]
+    assert sum(1 for i in items if isinstance(i, ToolRound)) == 1
+    assert [i for i in items if isinstance(i, str)] == ["done"]

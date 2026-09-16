@@ -1,0 +1,139 @@
+{
+  "ts": "2026-09-16T06:30:27",
+  "host_llm": "llama.cpp (see nvidia-smi in report for VRAM)",
+  "modes": [
+    {
+      "mode": "barge",
+      "fixture": "tests/fixtures/prompt_long.wav",
+      "barge": true,
+      "url": "ws://127.0.0.1:8600/ws",
+      "container": "vivo",
+      "client": [
+        {
+          "audio_bytes": 265216,
+          "audio_frames": 1,
+          "audio_secs": 5.53,
+          "wall": {
+            "mic_done": 1789540227.749,
+            "end": 1789540227.756,
+            "first_text": 1789540233.659,
+            "first_audio": 1789540241.351,
+            "last_audio": 1789540241.351,
+            "barge": 1789540241.351,
+            "barge_ack": 1789540241.352
+          },
+          "llm_first_token": 5.903,
+          "first_audio": 13.595,
+          "endpoint_secs": 0.007,
+          "barge_to_ack_secs": 0.0,
+          "last_audio_to_barge_secs": 0.0,
+          "barge_to_last_audio_secs": 0.0
+        },
+        {
+          "audio_bytes": 196608,
+          "audio_frames": 1,
+          "audio_secs": 4.1,
+          "wall": {
+            "mic_done": 1789540248.38,
+            "end": 1789540248.389,
+            "first_text": 1789540249.828,
+            "first_audio": 1789540255.779,
+            "last_audio": 1789540255.779,
+            "barge": 1789540255.779,
+            "barge_ack": 1789540255.779
+          },
+          "llm_first_token": 1.44,
+          "first_audio": 7.39,
+          "endpoint_secs": 0.008,
+          "barge_to_ack_secs": 0.0,
+          "last_audio_to_barge_secs": 0.0,
+          "barge_to_last_audio_secs": 0.0
+        }
+      ],
+      "server": [
+        [
+          {
+            "gen": 1,
+            "t0_wall": 1789540227.756,
+            "cancelled": true,
+            "events": {
+              "utterance_end": 0.0,
+              "stt_end": 0.733,
+              "llm_first_token": 5.903,
+              "sentence_1_ready": 6.888,
+              "tts_1_start": 6.888,
+              "sentence_2_ready": 7.107,
+              "generation_complete": 7.107,
+              "tts_1_end": 13.584,
+              "tts_1_sent": 13.584,
+              "tts_2_start": 13.584,
+              "tts_2_end": 16.444,
+              "barge_in": 13.596,
+              "stale_stop": 16.445
+            },
+            "llm_blocked_on_tts": 0.0,
+            "tts_total": 9.556,
+            "first_audio": 13.584,
+            "llm_gen_total": 1.204,
+            "sentences": 2,
+            "queue_max": 2
+          }
+        ],
+        [
+          {
+            "gen": 1,
+            "t0_wall": 1789540248.388,
+            "cancelled": true,
+            "events": {
+              "utterance_end": 0.0,
+              "stt_end": 0.76,
+              "llm_first_token": 1.44,
+              "sentence_1_ready": 2.319,
+              "tts_1_start": 2.319,
+              "sentence_2_ready": 2.755,
+              "generation_complete": 2.755,
+              "tts_1_end": 7.375,
+              "tts_1_sent": 7.375,
+              "tts_2_start": 7.375,
+              "tts_2_end": 11.617,
+              "barge_in": 7.391,
+              "stale_stop": 11.62
+            },
+            "llm_blocked_on_tts": 0.0,
+            "tts_total": 9.297,
+            "first_audio": 7.375,
+            "llm_gen_total": 1.315,
+            "sentences": 2,
+            "queue_max": 2
+          }
+        ]
+      ],
+      "resources": [
+        {
+          "stt": null,
+          "tts": {
+            "max": 1646.0,
+            "avg": 939.4
+          },
+          "llm": {
+            "cpu": null,
+            "gpu": null
+          },
+          "mem_max_mb": 925.9
+        },
+        {
+          "stt": null,
+          "tts": {
+            "max": 1618.7,
+            "avg": 1275.9
+          },
+          "llm": {
+            "cpu": null,
+            "gpu": null
+          },
+          "mem_max_mb": 927.4
+        }
+      ]
+    }
+  ]
+}

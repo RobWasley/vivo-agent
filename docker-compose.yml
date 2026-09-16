@@ -9,6 +9,10 @@ services:
       LLM_BASE_URL: ${LLM_BASE_URL:-http://host.docker.internal:8080/v1}
       LLM_MODEL: ${LLM_MODEL:-qwen3.8-27b}
       PERSONA: ${PERSONA:-You are vivo, a helpful voice assistant. Keep replies to one or two short spoken sentences.}
+      LLM_THINKING: ${LLM_THINKING:-1}
+      LLM_MAX_TOKENS: ${LLM_MAX_TOKENS:-600}
+      THINK_FILLER_FIRST_AFTER: ${THINK_FILLER_FIRST_AFTER:-2.0}
+      THINK_FILLER_INTERVAL: ${THINK_FILLER_INTERVAL:-8.0}
       MODEL_DIR: /models
       DATA_DIR: /data
       WORK_DIR: /workspace

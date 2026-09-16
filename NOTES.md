@@ -20,6 +20,26 @@
 - TTS thread tuning sweep (intra 4/8/12/16/24, inter 1): no difference (11.05–11.49 s) → the model is kernel-bound, not thread-bound. Implication: stream TTS per sentence (first chunk after ~0.5–1 s) — see D007.
 - Pipeline live latencies (T007 integration, from server logs): STT steady-state **0.7–0.75 s** for a 2.8 s utterance (2.15 s first-in-process incl. model load); LLM first sentence out in ~1.5–2 s; first TTS sentence **3.3 s** (24 chars; ~1.5 s of that is first-call ORT warmup), later sentences ~63 ms/char. End-to-end speech-end → first-audio ≈ **4–7 s** (persona's one-or-two-sentence replies dominate via the LLM).
 
+## Benchmarks — LLM/TTS decoupling before/after (2026-09-16, repeats 2, `benchmarks/`)
+Baseline = instrumented old serial pipeline (`baseline-pure-20260916-060238.json`); after = queue pipeline (`after-queue-20260916-061624.json` + `after-queue-barge-20260916-063027.json`). All seconds, end of speech → event. LLM first token varies 0.9–5.9 s run-to-run (shared host model), so read ranges, not single values.
+
+| metric (server unless noted) | baseline | after | note |
+|---|---|---|---|
+| long: `llm_blocked_on_tts` | 8.09–8.41 | **0.000** | LLM no longer waits on TTS |
+| long: `llm_gen_total` (wall) | 9.74–10.30 | **1.11–1.20** | pure generation |
+| long: first_audio | 11.29–11.65 | **7.31–7.94** | chunker 180→90 + overlap |
+| long: audio frames | 1 (8.2 s) | 2 | |
+| long: total | 11.29–11.65 | 11.83–13.57 | TTS-bound now (9.3 s audio @ ~1.2×) |
+| reply: first_audio | 3.85–7.78 | 3.61–4.99 | LLM-variance-dominated (single sentence) |
+| barge: first_audio | 10.92–13.40 | **7.39** (13.60 run w/ slow LLM) | |
+| barge: server `cancelled` | False (raced — reply done 11 ms pre-barge) | **True** | `barge_in`→`stale_stop` ≈ 1 in-flight synth |
+| barge: stale audio (client) | 0 | **0** | `barge_to_ack` 0.0–0.004 s |
+| res: TTS CPU peak | 918–1709 % | 1619–1858 % | ~16–18 cores, unchanged |
+| res: container mem max | 1002–1008 MB | 902–928 MB | |
+| res: LLM VRAM | 14910 MB | 14910 MB | host model, unchanged |
+
+Caveats: resource sampler effective interval ~0.5–1 s (docker stats + nvidia-smi subprocesses), so sub-second LLM windows (after: ~1.2 s) often yield `cpu: None`; GPU util samples mostly land on TTS-dominated stretches. Conversation state persists (`/data/conversation.json`, ~25 turns) — not reset, prefill impact negligible.
+
 ## Debugging
 - **Synthetic tones are unreliable Silero v6 triggers**: 220 Hz sine 0.5 amp peaks at prob 0.507 (exactly 1 window ≥ 0.5); 440 Hz, sawtooth sweep, pink noise → all ~0. Earlier probe that "sine220 detected" was an artifact: one lucky onset window + segment auto-close at end-of-audio. VAD tests therefore use the real TTS speech fixture (`tests/fixtures/stt_sample.wav`).
 - **Silero onsets early**: on the fixture it fires ~0.3–0.4 s before acoustic energy starts (low-freq rumble in TTS output), and its reported start timestamps are not 512-sample aligned (context offset). Test assertions use generous margins.
@@ -30,6 +50,8 @@
 - **kokoro-onnx 0.6.1**: pure onnxruntime (no ctranslate2 in the hot path despite the dependency); `create_session()` takes no thread params → session tuning only via monkeypatch; showed no gain.
 - **Headless UI test (no mic device)**: Playwright Chromium has no capture device, so `getUserMedia` can't be exercised. Instead inject the TTS fixture through the page's own `resampleTo16k`→`f32To16`→`ws.send` (only the getUserMedia call is skipped). Headless WebAudio *does* run: an `AudioContext` reaches `state:"running"` and scheduled `BufferSource`s play to `onended` (24 kHz TTS decoded + consumed fully). Static files are baked into the image (`COPY static/`), so UI edits need `docker compose build && up -d --force-recreate`. Inline data-URI `<link rel=icon>` removes the browser's `/favicon.ico` 404.
 - **Barge-in verified live**: after the client received the first TTS chunk, `barge_in` → `barge_ack`, zero further TTS synthesis logged for the cancelled reply (cancel checked before each sentence synth and in the LLM stream loop, which breaks and closes the httpx stream), then a fresh utterance processed normally. The worker's `finally` still emits `reply_done` for a cancelled reply — clients should treat `barge_ack` as "stop playing".
+- **Bench harness pitfalls (T013)**: (1) container logs go to **stderr** (python logging) — `docker logs` stdout is empty; read both. (2) `docker logs --since` parses naive timestamps as **UTC** — pass `datetime.fromtimestamp(x, tz=timezone.utc).isoformat()`. (3) Binary WS frames must `continue` before `json.loads` (a single fallthrough crashes the client 100% of the time — "intermittent" was a misdiagnosis). (4) `Bench.report()` must not call `first_audio()` while holding its non-reentrant lock (self-deadlock → line never logged, threads leaked). (5) Barge mode: the server logs its report only after finishing + discarding the in-flight synthesis, **seconds after `barge_ack`** → poll the log (15 s) instead of reading once.
+- **Sentinel-drain deadlock (T014)**: `release()` originally drained the TTS queue blindly. If the producer had already finished (queue = `[sentence, _TTS_DONE]`), the drain ate the sentinel; the worker then blocked forever in `q.get()` while the producer sat in `worker.join()` — two leaked threads, no bench line, no cleanup, and the next reply on that session was fine only because it gets a fresh queue. Fix: drain preserves `_TTS_DONE` (put it back and stop). Regression test: `test_barge_after_generation_complete_does_not_deadlock` (threads must return to the pre-utterance count).
 
 ## Useful References
 - Pithagoras voice pipeline (design reference): Silero V5 VAD, rolling speculative transcription, sentence-chunked streaming TTS (≤600 chars), independent synthesis/playback queues, barge-in cancels queues + upstream request, lazy model loading via leases.

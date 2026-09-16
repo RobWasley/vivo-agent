@@ -13,8 +13,9 @@ Browser (mic + playback + wobbly dot UI)
 FastAPI (uvicorn)
    ├── VAD: Silero v6 → speech endpointing
    ├── STT: faster-whisper small int8
-   ├── Agent: streaming tool loop → llama.cpp v1 (thinking off)
-   │     └── 8 tools: exec, files, web, time, weather
+    ├── Agent: streaming tool loop → llama.cpp v1 (thinking on)
+    │     ├── 8 tools: exec, files, web, time, weather
+    │     └── spoken fillers ("one moment…") while reasoning
    ├── Memory: persistent turns, idle-time LLM compaction
    └── TTS: kokoro-onnx 82M, sentence-chunked streaming
 ```
@@ -27,8 +28,11 @@ FastAPI (uvicorn)
 - A **running llama.cpp server** with an OpenAI-compatible `/v1` endpoint:
   - tool calling enabled (`--tools all`),
   - a Qwen3-style chat model whose template honours
-    `chat_template_kwargs={"enable_thinking": false}` (verified with
-    `qwen3.8-27b` — voice replies must be non-thinking for latency).
+    `chat_template_kwargs={"enable_thinking": …}` (verified with
+    `qwen3.8-27b`). The agent runs with **thinking on**: reasoning tokens
+    stream first (surfaced as `reasoning`/`reasoning_content`, never spoken
+    or stored) and vivo speaks short filler phrases during the silence — see
+    [Thinking & fillers](#thinking--fillers).
 - ~600 MB free disk for models (auto-downloaded on first run).
 - The UI opened from a **secure context** (HTTPS or `localhost`) or the
   browser mic won't work — see [Microphone & HTTPS](#microphone--https).
@@ -95,6 +99,10 @@ file or the `environment:` block):
 | `LLM_BASE_URL` | `http://host.docker.internal:8080/v1` | llama.cpp OpenAI-compatible endpoint |
 | `LLM_MODEL` | `qwen3.8-27b` | Model name to request |
 | `PERSONA` | vivo | System-prompt persona (change it → different character) |
+| `LLM_THINKING` | `1` | Run the LLM in thinking mode (reasoning before the answer); `0` to disable |
+| `LLM_MAX_TOKENS` | `600` | Token cap per reply — thinking tokens count against it |
+| `THINK_FILLER_FIRST_AFTER` | `2.0` | Seconds of silence before vivo speaks the first filler phrase |
+| `THINK_FILLER_INTERVAL` | `8.0` | Seconds between repeat filler phrases while the silence goes on |
 | `COMPACT_AFTER_CHARS` | `12000` | History size (chars ≈ /4 tokens) that triggers background compaction |
 | `KEEP_RECENT_TURNS` | `4` | Turns kept verbatim after a compaction checkpoint |
 | `WORK_DIR` | `/workspace` | Sandbox root for `exec` cwd and the file tools |
@@ -152,6 +160,23 @@ server runs: mic PCM (16 kHz) → Silero VAD endpointing → faster-whisper STT
 
 Full protocol in the `app/pipeline.py` module docstring.
 
+## Thinking & fillers
+
+The agent runs the LLM in **thinking mode** (`LLM_THINKING=1`, the default):
+reasoning tokens stream before the spoken answer. They are surfaced as
+`ReasoningDelta` items — **never spoken, never sent to the client, never
+stored in history** — and the UI's "Thinking…" pill already covers display.
+
+While no speakable text has arrived for `THINK_FILLER_FIRST_AFTER` seconds
+(prefill, reasoning, or a tool round), vivo speaks a short filler phrase
+("One moment.", "Working on it.", …), and repeats every
+`THINK_FILLER_INTERVAL` seconds while the silence goes on — a long reasoning
+stretch keeps getting fresh filler audio. Filler enqueue never blocks (a full
+TTS queue means there's already audio to play) and barge-in stops it at once.
+Filler audio is excluded from the `first_audio` bench metric. Set
+`THINK_FILLER_FIRST_AFTER` very high (or `LLM_THINKING=0`) for a quiet
+assistant.
+
 ## Microphone & HTTPS (secure context)
 
 The mic uses the browser `getUserMedia` API, which is only available in a
@@ -187,7 +212,7 @@ app/
   models.py       idempotent model download
   config.py       env-var configuration
 static/           browser UI: wobbly canvas dot, mic capture, playback, sidebar
-tests/            unit + live WS pipeline tests (58)
+tests/            unit + live WS pipeline tests (76)
 ```
 
 ## Tests
@@ -203,7 +228,7 @@ docker compose run --rm -w /app -e WS_URL=ws://vivo:8000/ws \
 
 Most tests run offline (fake LLM/TTS where needed); the agent, pipeline and
 compaction tests call the **live llama.cpp server**, so it must be up and
-reachable from the containers. The full suite is ~56 s. VAD/STT tests use a
+reachable from the containers. The full suite is ~65 s. VAD/STT tests use a
 real TTS speech fixture — synthetic tones do not reliably trigger Silero v6
 (see `NOTES.md`).
 
@@ -220,8 +245,9 @@ real TTS speech fixture — synthetic tones do not reliably trigger Silero v6
 ## Documentation
 
 - `SPEC.md` — requirements, architecture, acceptance criteria
-- `TASKS.md` — build tasks T001–T012 (all done) with verification evidence
-- `DECISIONS.md` — D001–D010: design log (why faster-whisper/kokoro,
-  hand-rolled agent, barge-in generation token, memory compaction, sandbox)
+- `TASKS.md` — build tasks T001–T015 (all done) with verification evidence
+- `DECISIONS.md` — D001–D012: design log (why faster-whisper/kokoro,
+  hand-rolled agent, barge-in generation token, memory compaction, sandbox,
+  thinking mode + spoken fillers)
 - `STATUS.md` — current state, resume notes, known gotchas
 - `NOTES.md` — benchmarks and debugging discoveries

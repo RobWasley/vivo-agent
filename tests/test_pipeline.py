@@ -45,7 +45,9 @@ def fjson(frame) -> dict:
 async def send_utterance(ws, pcm16: np.ndarray, frame: int = 3200) -> None:
     for i in range(0, len(pcm16), frame):
         await ws.send(pcm16[i : i + frame].tobytes())
-    await ws.send(np.zeros(16000, dtype="<i2").tobytes())  # tail silence for endpointing
+    # tail silence for endpointing: must exceed VAD min_silence + reopen
+    # (1.0 s default) beyond the last voiced window, so send 1.5 s
+    await ws.send(np.zeros(24000, dtype="<i2").tobytes())
 
 
 async def recv_until(ws, predicate, timeout: float):

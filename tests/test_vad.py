@@ -37,7 +37,7 @@ def run(vad: VAD, sig: np.ndarray, frame: int = 1024) -> list:
 
 
 def test_endpointing_single_speech():
-    vad = VAD(min_silence_ms=400, speech_pad_ms=200, min_speech_ms=200)
+    vad = VAD(min_silence_ms=400, speech_pad_ms=200, min_speech_ms=200, reopen_ms=0)
     sig = np.concatenate([silence(0.5), SPEECH, silence(1.0)])
     events = run(vad, sig)
     starts = [e for e in events if e.type == "start"]
@@ -53,7 +53,7 @@ def test_endpointing_single_speech():
 
 
 def test_two_segments_split_on_silence():
-    vad = VAD(min_silence_ms=400, min_speech_ms=200)
+    vad = VAD(min_silence_ms=400, min_speech_ms=200, reopen_ms=0)
     gap = silence(0.6)
     sig = np.concatenate([SPEECH, gap, SPEECH, silence(1.0)])
     events = run(vad, sig)
@@ -74,17 +74,41 @@ def test_silence_only_no_events():
 
 def test_short_segment_dropped():
     # 0.2 s of speech is below min_speech_ms=500 -> no end event.
-    vad = VAD(min_speech_ms=500, min_silence_ms=400)
+    vad = VAD(min_speech_ms=500, min_silence_ms=400, reopen_ms=0)
     sig = np.concatenate([SPEECH[: int(0.2 * SR)], silence(1.0)])
     ends = [e for e in run(vad, sig) if e.type == "end"]
     assert len(ends) == 0, f"expected no end events, got {ends}"
 
 
 def test_partial_frames_buffered():
-    vad = VAD(min_silence_ms=400, speech_pad_ms=200, min_speech_ms=200)
+    vad = VAD(min_silence_ms=400, speech_pad_ms=200, min_speech_ms=200, reopen_ms=0)
     sig = np.concatenate([silence(0.5), SPEECH, silence(1.0)])
     frame = 512 * 3 + 7  # awkward frame size, not a multiple of the 512 window
     events = run(vad, sig, frame=frame)
     ends = [e for e in events if e.type == "end"]
-    assert len(ends) == 1, f"got {len(ends)} segments: {ends}"
+    assert len(ends) == 1, f"got {len(ends)} segments: {events}"
     assert 2.8 < ends[0].end < 3.6
+
+
+def test_breath_pause_keeps_single_utterance():
+    # A 0.6 s pause (a breath) is shorter than min_silence+reopen (1.0 s), so
+    # the endpoint goes pending and the resumed speech continues one utterance.
+    vad = VAD(min_silence_ms=400, reopen_ms=600, min_speech_ms=200)
+    sig = np.concatenate([SPEECH, silence(0.6), SPEECH, silence(1.5)])
+    events = run(vad, sig)
+    starts = [e for e in events if e.type == "start"]
+    ends = [e for e in events if e.type == "end"]
+    assert len(starts) == 1, f"got {len(starts)} starts: {events}"
+    assert len(ends) == 1, f"expected one merged utterance, got {len(ends)}: {events}"
+    seg = ends[0].samples
+    # Merged segment spans both halves plus the breath between them.
+    assert seg is not None and 5.5 * SR < len(seg) < 7.0 * SR, f"segment {len(seg) / SR:.2f}s"
+
+
+def test_pause_beyond_reopen_window_still_splits():
+    # A 1.4 s pause outlasts min_silence+reopen (1.0 s) -> two utterances.
+    vad = VAD(min_silence_ms=400, reopen_ms=600, min_speech_ms=200)
+    sig = np.concatenate([SPEECH, silence(1.4), SPEECH, silence(1.5)])
+    ends = [e for e in run(vad, sig) if e.type == "end"]
+    assert len(ends) == 2, f"expected two segments, got {len(ends)}: {ends}"
+    assert ends[1].end > ends[0].end

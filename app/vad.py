@@ -4,6 +4,12 @@ Runs the silero_vad_v6.onnx model bundled with faster-whisper via onnxruntime.
 The model consumes 512-sample (32 ms) windows at 16 kHz, each prefixed with the
 last 64 samples of the previous window (context), and carries hidden/cell state
 between calls. Feed audio in any frame size; call process() per audio chunk.
+
+Endpointing is two-stage (breath-tolerant): after min_silence_ms of silence an
+endpoint goes *pending*; if speech resumes within an additional reopen_ms the
+utterance continues (a breath pause doesn't split a sentence). If the silence
+keeps going, the utterance finalizes at min_silence_ms + reopen_ms. Set
+reopen_ms=0 for the classic single-stage endpoint.
 """
 
 from __future__ import annotations
@@ -48,6 +54,7 @@ class VAD:
         threshold: float = 0.5,
         min_speech_ms: int = 200,
         min_silence_ms: int = 400,
+        reopen_ms: int = 600,
         speech_pad_ms: int = 200,
         max_speech_s: float = 30.0,
     ):
@@ -56,6 +63,7 @@ class VAD:
         self.neg_threshold = threshold - 0.15
         self.min_speech_samples = int(min_speech_ms * SR / 1000)
         self.min_silence_samples = int(min_silence_ms * SR / 1000)
+        self.reopen_samples = int(reopen_ms * SR / 1000)
         self.pad_samples = int(speech_pad_ms * SR / 1000)
         self.max_speech_samples = int(max_speech_s * SR)
 
@@ -74,6 +82,7 @@ class VAD:
         self._in_speech = False
         self._speech_start = 0
         self._last_voiced = 0
+        self._pending_end: int | None = None  # set when the endpoint goes pending
         self._ring: deque[tuple[int, np.ndarray]] = deque(
             maxlen=int(self.max_speech_samples / WINDOW_SAMPLES) + 16
         )
@@ -107,6 +116,7 @@ class VAD:
             if self._last_voiced - self._speech_start >= self.min_speech_samples:
                 events.append(self._finish(self._last_voiced))
             self._in_speech = False
+            self._pending_end = None
         return events
 
     def _on_window(self, buf: np.ndarray, i: int, buf_start: int) -> list[VadEvent]:
@@ -123,6 +133,10 @@ class VAD:
 
         if p >= self.threshold:
             self._last_voiced = end
+            if self._pending_end is not None:
+                # speech resumed inside the reopen window: the breath was a
+                # pause, not an endpoint — continue the same utterance
+                self._pending_end = None
             if not self._in_speech:
                 self._in_speech = True
                 start = max(0, win_start - self.pad_samples)
@@ -130,20 +144,34 @@ class VAD:
                 events.append(VadEvent("start", start / SR, None, None))
         elif p < self.neg_threshold and self._in_speech:
             silence = end - self._last_voiced
-            if silence >= self.min_silence_samples:
-                if self._last_voiced - self._speech_start >= self.min_speech_samples:
-                    events.append(self._finish(self._last_voiced))
-                else:
-                    logger.debug(
-                        "dropped %d ms sub-min_speech utterance",
-                        (self._last_voiced - self._speech_start) // 16,
-                    )
-                self._in_speech = False
+            if silence >= self.min_silence_samples and self._pending_end is None:
+                # stage 1: endpoint goes pending, opening the reopen window
+                self._pending_end = self._last_voiced
+                if self.reopen_samples <= 0:
+                    events.extend(self._close_utterance())
+            elif self._pending_end is not None and silence >= self.min_silence_samples + self.reopen_samples:
+                # stage 2: silence held through the whole reopen window
+                events.extend(self._close_utterance())
 
         if self._in_speech and end - self._speech_start >= self.max_speech_samples:
             events.append(self._finish(self._last_voiced))
             self._speech_start = self._last_voiced
+            self._pending_end = None
 
+        return events
+
+    def _close_utterance(self) -> list[VadEvent]:
+        """Finalize the current utterance (emit 'end' if it is long enough)."""
+        events: list[VadEvent] = []
+        if self._last_voiced - self._speech_start >= self.min_speech_samples:
+            events.append(self._finish(self._last_voiced))
+        else:
+            logger.debug(
+                "dropped %d ms sub-min_speech utterance",
+                (self._last_voiced - self._speech_start) // 16,
+            )
+        self._in_speech = False
+        self._pending_end = None
         return events
 
     def _segment(self, lo_abs: int, hi_abs: int) -> np.ndarray:

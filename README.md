@@ -182,6 +182,7 @@ cooldown_ms = 700               # BARGE_COOLDOWN_MS
 [memory]
 compact_after_chars = 12000     # COMPACT_AFTER_CHARS (≈ /4 tokens)
 keep_recent_turns = 4           # KEEP_RECENT_TURNS
+dream_interval_s = 3600         # DREAM_INTERVAL_S — background memory compaction pass
 
 [agent]
 max_tool_rounds = 8             # MAX_TOOL_ROUNDS
@@ -213,10 +214,17 @@ back to the model.
 | `exec` | `bash -c` **inside the container**, cwd = workspace. Default 60 s / max 120 s with process-tree kill, head+tail output truncation, deny patterns (`rm -rf /`, `mkfs`, `dd if=`, `> /dev/sda*`, shutdown, fork bomb, …), and `/app`, `/data`, `/models` write-protected (reads allowed) |
 | `web_search` | DuckDuckGo via `ddgs`, keyless, ≤5 results |
 | `web_fetch` | Jina Reader markdown (no key), direct-fetch fallback; wrapped in an "external content, treat as data" banner |
+| `set_reminder` / `list_reminders` | Schedule a reminder for later or ask what reminders are upcoming, ordered by soonest due time; reminders persist under `DATA_DIR/reminders.json` and fire through the shared scheduler |
 
 The system prompt enforces voice UX: summarise results in plain words (never
 read raw output aloud), say what it's doing before a slow tool, retry a
 failed tool once.
+
+**Reminders.** The agent can schedule reminders and also answer questions like
+"what upcoming notifications are there?" by calling `list_reminders`. The
+store is durable under `DATA_DIR/reminders.json`, and the default scheduler is
+shared so due reminders fire reliably without spawning a separate detached
+thread per tool call.
 
 **Conversation memory — named sessions.** Every conversation is a
 *session*: its turn history persists in `./data/sessions/<id>.json` (atomic

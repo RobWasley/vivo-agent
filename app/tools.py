@@ -17,6 +17,7 @@ import httpx
 from app import config
 from app import shell as shell_tool
 from app import web as web_tool
+from app.reminders import ReminderStore, get_default_store, schedule_reminder
 
 MAX_RESULT_CHARS = 16000
 IGNORED_DIRS = {
@@ -401,6 +402,39 @@ TOOLS: List[dict] = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "set_reminder",
+            "description": (
+                "Schedule a spoken reminder for later. Use either in_minutes or at, "
+                "but not both. 'at' may be an ISO datetime or a clock time like '7:30 pm'."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "text": {"type": "string", "description": "What to remember."},
+                    "in_minutes": {"type": "number", "description": "Delay in minutes."},
+                    "at": {"type": "string", "description": "When to remind, e.g. '2026-09-18T19:00:00' or '7:30 pm'."},
+                },
+                "required": ["text"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_reminders",
+            "description": "List upcoming pending reminders, ordered by soonest due time.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "limit": {"type": "integer", "description": "Maximum number of upcoming reminders to return."},
+                },
+                "required": [],
+            },
+        },
+    },
 ]
 
 
@@ -429,6 +463,30 @@ def execute(name: str, args: dict) -> str:
             func = lambda query="", count=None: web_tool.web_search(str(query), count=count)
         elif tool_name == "web_fetch":
             func = lambda url="", max_chars=None: web_tool.web_fetch(str(url), max_chars=max_chars)
+        elif tool_name == "set_reminder":
+            def func(text="", in_minutes=None, at=None):
+                if text == "":
+                    return "error: reminder text is required"
+                if in_minutes is not None and at is not None:
+                    return "error: use either in_minutes or at, not both"
+                if in_minutes is not None:
+                    item = schedule_reminder(str(text), minutes=float(in_minutes))
+                elif at is not None:
+                    item = schedule_reminder(str(text), at=str(at))
+                else:
+                    return "error: supply in_minutes or at for the reminder"
+                return f"reminder scheduled for {item['due_at']}"
+        elif tool_name == "list_reminders":
+            def func(limit=10):
+                limit = int(limit or 10)
+                store = get_default_store()
+                items = store.upcoming(limit=limit)
+                if not items:
+                    return "No upcoming reminders."
+                lines = []
+                for item in items:
+                    lines.append(f"- {item['text']} (due {item['due_at']})")
+                return "\n".join(lines)
         else:
             continue
         registry.register(

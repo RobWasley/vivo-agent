@@ -70,6 +70,12 @@ Caveats: resource sampler effective interval ~0.5–1 s (docker stats + nvidia-s
 - open-meteo (no API key): https://open-meteo.com/
 - llama.cpp server: `chat_template_kwargs` for per-request template vars (e.g. `enable_thinking`); `--reasoning-format` controls thought extraction.
 
+## Reminder system notes
+- Reminder persistence lives under `DATA_DIR/reminders.json` (default `/data/reminders.json` in Docker), not under the repo root. This avoids the `EACCES` issue caused by running as appuser inside the container while the workspace mount is not writable.
+- The active reminder path uses a shared default scheduler (`get_default_scheduler()`) so tool-triggered reminders do not create a separate detached scheduler that silently stops firing.
+- The agent now exposes both `set_reminder` and `list_reminders`, which lets the model answer natural questions such as "what upcoming notifications are there?" using the same persisted reminder store as the backend scheduler.
+- Reminder callbacks send payloads through the live websocket session flow when the app is active, and the browser can surface them as audio or transcript updates.
+
 ## Nanobot-inspired architecture choices adopted in vivo
 - We kept the real-time voice stack intact, but borrowed one of nanobot's best patterns: a small tool registry for discovery and validation.
 - `app/tools.py` now exposes a typed `ToolRegistry` + `ToolDefinition` abstraction so tool names, required params, and schemas are centralised instead of being implicit in a flat dispatch function.

@@ -269,6 +269,7 @@ class SessionStore:
             rows = [
                 {
                     "id": sid,
+                    "name": e.get("name") or "",
                     "created": e["created"],
                     "last_used": e["last_used"],
                     "turns": e["turns"],
@@ -297,6 +298,7 @@ class SessionStore:
             self._conversations[session_id] = conv
             now = time.time()
             self._index["sessions"][session_id] = {
+                "name": "",
                 "created": now,
                 "last_used": now,
                 "turns": 0,
@@ -306,6 +308,15 @@ class SessionStore:
             self._save_index()
         log.info("created session %s", session_id)
         return session_id
+
+    def rename(self, session_id: str, name: str) -> None:
+        """Set a human-friendly display name for a session (empty clears it)."""
+        with self.lock:
+            entry = self._index["sessions"].get(session_id)
+            if entry is None:
+                raise KeyError(session_id)
+            entry["name"] = (name or "").strip()
+            self._save_index()
 
     def set_active(self, session_id: str) -> None:
         with self.lock:
@@ -397,6 +408,7 @@ class SessionStore:
                 if not isinstance(sid, str) or not isinstance(entry, dict):
                     continue
                 clean[sid] = {
+                    "name": str(entry.get("name") or ""),
                     "created": float(entry.get("created") or 0.0),
                     "last_used": float(entry.get("last_used") or 0.0),
                     "turns": int(entry.get("turns") or 0),
@@ -444,6 +456,7 @@ class SessionStore:
             except Exception:
                 pass
             self._index["sessions"][session_id] = {
+                "name": "",
                 "created": mtime,
                 "last_used": mtime,
                 "turns": turns,
@@ -464,6 +477,7 @@ class SessionStore:
             conv._save()
             now = time.time()
             self._index["sessions"][session_id] = {
+                "name": "",
                 "created": now,
                 "last_used": now,
                 "turns": len(old.turns),

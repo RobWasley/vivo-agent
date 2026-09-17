@@ -268,3 +268,18 @@ def test_scheduler_repeats_during_pure_silence(monkeypatch):
     items = _drain(q)
     assert len(items) >= 2
     assert all(item[2] == "filler" and item[1] in FILLER_PHRASES for item in items)
+
+
+def test_filler_skips_when_queue_is_full(monkeypatch):
+    monkeypatch.setattr(config, "THINK_FILLER_FIRST_AFTER", 0.05)
+    monkeypatch.setattr(config, "THINK_FILLER_INTERVAL", 0.1)
+    session = SimpleNamespace(alive=lambda gen: True)
+    q: "queue.Queue" = queue.Queue(maxsize=1)
+    q.put((0, "busy", "tts"))
+    f = ThinkingFiller(session, 1, q, Bench(time.monotonic()))
+    f.start()
+    time.sleep(0.25)
+    f.stop()
+    assert f.count == 0
+    assert q.qsize() == 1
+    assert _drain(q)[0][1] == "busy"

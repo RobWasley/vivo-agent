@@ -50,6 +50,18 @@ def test_set_active_unknown_raises():
         store.set_active("nope")
 
 
+def test_rename_sets_display_name_and_can_clear():
+    store = SessionStore()
+    sid = store.active_id
+    store.rename(sid, "Work Notes")
+    row = [r for r in store.list_sessions() if r["id"] == sid][0]
+    assert row["name"] == "Work Notes"
+
+    store.rename(sid, "   ")
+    row = [r for r in store.list_sessions() if r["id"] == sid][0]
+    assert row["name"] == ""
+
+
 def test_conversation_for_unknown_raises():
     store = SessionStore()
     with pytest.raises(KeyError):
@@ -357,9 +369,17 @@ def test_serve_session_pins_query_param():
 def _offline_app() -> FastAPI:
     app = FastAPI()
     app.add_api_route("/api/sessions", main.list_sessions, methods=["GET"])
+    app.add_api_route(
+        "/api/sessions/{session_id}/transcript",
+        main.get_session_transcript,
+        methods=["GET"],
+    )
     app.add_api_route("/api/sessions", main.create_session, methods=["POST"])
     app.add_api_route(
         "/api/sessions/{session_id}/activate", main.activate_session, methods=["POST"]
+    )
+    app.add_api_route(
+        "/api/sessions/{session_id}/rename", main.rename_session, methods=["POST"]
     )
     app.add_api_route(
         "/api/sessions/{session_id}", main.delete_session, methods=["DELETE"]
@@ -376,6 +396,23 @@ def test_sessions_api():
     assert len(j["sessions"]) == 1
     assert j["sessions"][0]["id"] == active
     assert j["sessions"][0]["active"] is True
+
+    t = client.get(f"/api/sessions/{active}/transcript")
+    assert t.status_code == 200
+    assert t.json() == {"id": active, "summary": None, "turns": []}
+
+    store = client.app.state.engines.sessions
+    store.conversation_for(active).add_turn("hello", "hi")
+    t = client.get(f"/api/sessions/{active}/transcript")
+    assert t.status_code == 200
+    assert t.json()["turns"] == [{"user": "hello", "assistant": "hi"}]
+
+    r = client.post(f"/api/sessions/{active}/rename", json={"name": "Daily standup"})
+    assert r.status_code == 200
+    assert r.json()["name"] == "Daily standup"
+    j = client.get("/api/sessions").json()
+    row = [s for s in j["sessions"] if s["id"] == active][0]
+    assert row["name"] == "Daily standup"
 
     r = client.post("/api/sessions")
     assert r.status_code == 200
@@ -398,4 +435,6 @@ def test_sessions_api():
     assert client.get("/api/sessions").json()["active"] == fresh
 
     assert client.post("/api/sessions/nope/activate").status_code == 404
+    assert client.post("/api/sessions/nope/rename", json={"name": "x"}).status_code == 404
     assert client.delete("/api/sessions/nope").status_code == 404
+    assert client.get("/api/sessions/nope/transcript").status_code == 404

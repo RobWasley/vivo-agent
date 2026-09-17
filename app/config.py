@@ -43,6 +43,12 @@ def _env(name: str):
     return None if v in (None, "") else v
 
 
+def _default_llm_base_url() -> str:
+    # In the app container, host.docker.internal resolves to the host machine.
+    # Outside Docker, the local llama.cpp server usually lives on localhost.
+    return "http://host.docker.internal:8080/v1" if os.path.exists("/.dockerenv") else "http://localhost:8080/v1"
+
+
 def _bool(v) -> bool:
     if isinstance(v, bool):
         return v
@@ -57,6 +63,11 @@ def _get(section: str, key: str, env, default, cast=str):
             return cast(v)
     v = _file.get(section, {}).get(key)
     if v is not None:
+        # Keep the shipped Docker default working in-container while making the
+        # host-side test/dev path resolve to localhost without a manual env var.
+        if section == "llm" and key == "base_url" and not os.path.exists("/.dockerenv"):
+            if str(v).startswith("http://host.docker.internal"):
+                return "http://localhost:8080/v1"
         return v if cast is str else cast(v)
     return cast(default)
 
@@ -78,7 +89,7 @@ def _emit() -> None:
     g = globals()
 
     # --- LLM ---------------------------------------------------------------
-    g["LLM_BASE_URL"] = _get("llm", "base_url", "LLM_BASE_URL", "http://host.docker.internal:8080/v1")
+    g["LLM_BASE_URL"] = _get("llm", "base_url", "LLM_BASE_URL", _default_llm_base_url())
     g["LLM_MODEL"] = _get("llm", "model", "LLM_MODEL", "qwen3.8-27b")
     # Thinking (T015): reasoning tokens stream before the spoken answer; the
     # pipeline speaks filler phrases during the silence ([filler] below).

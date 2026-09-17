@@ -17,10 +17,11 @@ log = logging.getLogger("vivo.models")
 # Hugging Face repos the TTS engine needs (see app/tts.py).
 HF_REPOS = ("YatharthS/LuxTTS", "openai/whisper-tiny")
 
-# Voice reference clip shipped with the repo; seeded into <data>/voices on
-# first run so a fresh deployment has a voice out of the box (T022).
+# The out-of-the-box voice name (T022); every .wav shipped in the repo voices/
+# dir is seeded into <data>/voices on first run so a fresh deployment has
+# voices available immediately.
 DEFAULT_VOICE = "default"
-DEFAULT_VOICE_SRC = Path(__file__).resolve().parent.parent / "voices" / "default.wav"
+VOICES_SRC = Path(__file__).resolve().parent.parent / "voices"
 
 
 def ensure_models(model_dir: str, data_dir: str | None = None) -> None:
@@ -30,10 +31,22 @@ def ensure_models(model_dir: str, data_dir: str | None = None) -> None:
     for repo in HF_REPOS:
         log.info("ensuring HF model: %s", repo)
         snapshot_download(repo)
-    if data_dir is not None and DEFAULT_VOICE_SRC.is_file():
-        dst = Path(data_dir) / "voices" / f"{DEFAULT_VOICE}.wav"
-        if not dst.exists():
-            dst.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copyfile(DEFAULT_VOICE_SRC, dst)
-            log.info("seeded default voice -> %s", dst)
+    if data_dir is not None:
+        seed_voices(data_dir)
     Path(model_dir).mkdir(parents=True, exist_ok=True)
+
+
+def seed_voices(data_dir: str) -> None:
+    """Copy every reference clip shipped in voices/ into <data>/voices.
+
+    Existing files are never overwritten, so user-uploaded or renamed clips
+    survive upgrades and re-runs."""
+    if not VOICES_SRC.is_dir():
+        return
+    dst_dir = Path(data_dir) / "voices"
+    dst_dir.mkdir(parents=True, exist_ok=True)
+    for src in sorted(VOICES_SRC.glob("*.wav")):
+        dst = dst_dir / src.name
+        if not dst.exists():
+            shutil.copyfile(src, dst)
+            log.info("seeded voice %s -> %s", src.name, dst)

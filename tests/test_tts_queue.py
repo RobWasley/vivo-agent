@@ -224,3 +224,21 @@ def test_barge_after_generation_complete_does_not_deadlock():
         assert len(ws.texts("reply_done")) == 0  # cancelled: no reply_done
 
     asyncio.run(go())
+
+
+def test_barge_timestamps_are_cleared_after_generation_finishes():
+    session = VoiceSession(FakeWS(), make_engines(FakeAgent(["hi"]), FakeTTS()))
+    session.reply_active = True
+    session.generation = 1
+    session.tts_queue = __import__("queue").Queue()
+    session.barge_mono[1] = 123.0
+
+    session.release()
+    assert 1 not in session.barge_mono
+
+    session.reply_active = True
+    session.generation = 2
+    session.tts_queue = __import__("queue").Queue()
+    session.barge_mono[2] = 456.0
+    session.release()
+    assert 2 not in session.barge_mono

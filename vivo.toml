@@ -11,7 +11,7 @@ base_url = "http://host.docker.internal:8080/v1"
 # Model name the LLM server serves, e.g. qwen3.8-27b.
 model = "qwen3.8-27b"
 # Let the model reason before answering. Adds latency but improves answers, especially with tools. vivo speaks filler phrases while it thinks.
-thinking = false
+thinking = true
 # Generation budget per reply (thinking + answer together). Too low truncates answers; too high wastes latency.
 max_tokens = 608
 
@@ -25,31 +25,31 @@ system_prompt = "You are a hands-free voice assistant; your replies are spoken a
 [user]
 # User profile
 # vivo addresses you by this name.
-name = ""
+name = "Rob"
 # Your place, e.g. "Bristol, UK". Default for weather questions; ask about other places by name.
-location = ""
+location = "Gloucester, UK"
 # IANA time zone, e.g. "Europe/London". Used for time questions; empty means the container's time zone (UTC).
-timezone = ""
+timezone = "Europe/London"
 # Units in weather answers: metric is °C and km/h, imperial is °F and mph.
 units = "metric"
 
 [filler]
 # Thinking fillers
 # How long vivo waits without speakable text before starting to fill the silence with a phrase.
-first_after_s = 1.5
+first_after_s = 3
 # Gap between repeated filler phrases while the model keeps thinking.
-interval_s = 25
+interval_s = 40
 # Short phrases vivo speaks while thinking, one per line. Keep them brief — each one is synthesised separately.
-phrases = ["Let me think about that.", "Working on it.", "One moment.", "Give me a second.", "Still thinking.", "Let me work that out.", "This one's tricky... give me a moment."]
+phrases = ["Let me think about that.", "Working on it.", "One moment.", "Give me a second.", "Let me work that out.", "This one's tricky... give me a moment."]
 
 [voice]
 # Voice (TTS)
 # The voice vivo speaks with: a reference clip (3-30 s of clear speech) that is cloned. Upload or record one below.
 tts_voice = "default"
 # Speech-rate multiplier applied to the cloned voice: 1.0 is the model's natural pace, higher is faster.
-tts_speed = 0.8
+tts_speed = 0.85
 # Silence appended after each spoken sentence.
-sentence_pause_s = 0.1
+sentence_pause_s = 0.3
 # Hard split for long unpunctuated text. Shorter means the first audio arrives sooner at the cost of choppier phrasing.
 sentence_max_chars = 250
 # Split at clause punctuation (comma, semicolon, colon) once a sentence exceeds this length, so TTS can start before the whole sentence is generated. 0 disables it. Lower cuts first-audio latency; higher sounds smoother.

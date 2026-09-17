@@ -49,7 +49,7 @@ SHORT_FIX = os.path.join(REPO, "tests", "fixtures", "stt_sample.wav")
 LONG_FIX = os.path.join(REPO, "tests", "fixtures", "prompt_long.wav")
 OUT_DIR = os.path.join(REPO, "benchmarks")
 BENCH_RE = re.compile(r"bench gen=(\d+) (\{.*\})\s*$")
-SAMPLE_RATE_TTS = 48000
+DEFAULT_TTS_SAMPLE_RATE = 48000
 FRAME = 3200  # mic frame size, samples (like the UI: 16 kHz frames)
 
 
@@ -174,6 +174,7 @@ async def run_ws(url: str, pcm16: np.ndarray, barge: bool, timeout: float = 240.
     t: dict = {}
     out: dict = {}
     audio = []  # (t, nbytes)
+    tts_sr = DEFAULT_TTS_SAMPLE_RATE
     w0, m0 = time.time(), time.monotonic()  # wall anchor (resource-window fallback)
     async with websockets.connect(url, max_size=None) as ws:
         for i in range(0, len(pcm16), FRAME):
@@ -207,6 +208,15 @@ async def run_ws(url: str, pcm16: np.ndarray, barge: bool, timeout: float = 240.
             kind = m.get("type")
             if kind == "end" and "end" not in t:
                 t["end"] = now
+            elif kind == "config":
+                # Server handshake includes audio settings; this keeps duration
+                # math aligned even if the runtime sample rate changes.
+                try:
+                    sr = int(m.get("audio", {}).get("tts_sample_rate", tts_sr))
+                except (TypeError, ValueError):
+                    sr = tts_sr
+                if 8000 <= sr <= 96000:
+                    tts_sr = sr
             elif kind == "agent_text" and "first_text" not in t:
                 t["first_text"] = now
             elif kind == "barge_ack" and "barge_ack" not in t:
@@ -239,8 +249,12 @@ async def run_ws(url: str, pcm16: np.ndarray, barge: bool, timeout: float = 240.
                     if m.get("type") == "reply_done" and "reply_done" not in t:
                         t["reply_done"] = now
             t["stale_audio_leaked"] = leaked
-    out.update({"audio_bytes": sum(b for _, b in audio), "audio_frames": len(audio),
-                "audio_secs": round(sum(b for _, b in audio) / 2 / SAMPLE_RATE_TTS, 2)})
+    out.update({
+        "audio_bytes": sum(b for _, b in audio),
+        "audio_frames": len(audio),
+        "tts_sample_rate": tts_sr,
+        "audio_secs": round(sum(b for _, b in audio) / 2 / tts_sr, 2),
+    })
     out["wall"] = {k: round(w0 + (v - m0), 3) for k, v in t.items() if isinstance(v, float)}
     e = t.get("end")
     if e:

@@ -19,6 +19,10 @@ class ConfigPayload(BaseModel):
     values: dict
 
 
+class SessionRenamePayload(BaseModel):
+    name: str
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await asyncio.to_thread(models.ensure_models, config.MODEL_DIR, config.DATA_DIR)
@@ -126,6 +130,27 @@ async def list_sessions(request: Request):
     return {"active": store.active_id, "sessions": store.list_sessions()}
 
 
+@app.get("/api/sessions/{session_id}/transcript")
+async def get_session_transcript(session_id: str, request: Request):
+    """Stored transcript for one session: compacted summary + remaining turns.
+
+    Turns are ordered oldest -> newest and each turn is returned as
+    {"user": ..., "assistant": ...} so the UI can repopulate on reconnect.
+    """
+    store = request.app.state.engines.sessions
+    try:
+        conv = store.conversation_for(session_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="unknown session")
+    with conv.lock:
+        turns = [
+            {"user": user_text, "assistant": assistant_text}
+            for user_text, assistant_text in conv.turns
+        ]
+        summary = conv.summary
+    return {"id": session_id, "summary": summary, "turns": turns}
+
+
 @app.post("/api/sessions")
 async def create_session(request: Request):
     """Create a new session and make it the active one."""
@@ -143,6 +168,17 @@ async def activate_session(session_id: str, request: Request):
     except KeyError:
         raise HTTPException(status_code=404, detail="unknown session")
     return {"active": store.active_id}
+
+
+@app.post("/api/sessions/{session_id}/rename")
+async def rename_session(session_id: str, body: SessionRenamePayload, request: Request):
+    """Set or clear a display name for a session."""
+    store = request.app.state.engines.sessions
+    try:
+        store.rename(session_id, body.name)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="unknown session")
+    return {"ok": True, "session_id": session_id, "name": body.name.strip()}
 
 
 @app.delete("/api/sessions/{session_id}")

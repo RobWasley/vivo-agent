@@ -1,4 +1,5 @@
 from app import config, tools
+from app.tools import ToolRegistry
 
 _CURRENT = {
     "temperature_2m": 21.4,
@@ -120,3 +121,38 @@ def test_read_file_escape_rejected(tmp_path, monkeypatch):
 
 def test_unknown_tool():
     assert tools.execute("nope", {}).startswith("error")
+
+
+def test_tool_registry_validates_and_executes():
+    registry = ToolRegistry()
+    registry.register(
+        tools.ToolDefinition(
+            name="echo",
+            description="echo a value",
+            parameters={"type": "object", "properties": {"value": {"type": "string"}}, "required": ["value"]},
+            func=lambda value: f"echo:{value}",
+        )
+    )
+
+    assert registry.get("echo") is not None
+    result = registry.execute("echo", {"value": "hello"})
+    assert result == "echo:hello"
+
+    bad = registry.execute("echo", {})
+    assert bad.startswith("error")
+
+
+def test_tool_registry_exposes_openai_schema_and_known_tools():
+    registry = ToolRegistry()
+    registry.register(
+        tools.ToolDefinition(
+            name="ping",
+            description="ping",
+            parameters={"type": "object", "properties": {"text": {"type": "string"}}, "required": ["text"]},
+            func=lambda text: text,
+        )
+    )
+
+    defs = registry.get_definitions()
+    assert defs[0]["function"]["name"] == "ping"
+    assert "ping" in registry.tool_names

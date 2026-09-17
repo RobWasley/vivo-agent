@@ -69,3 +69,9 @@ Caveats: resource sampler effective interval ~0.5–1 s (docker stats + nvidia-s
 - Silero VAD: https://github.com/snakers4/silero-vad
 - open-meteo (no API key): https://open-meteo.com/
 - llama.cpp server: `chat_template_kwargs` for per-request template vars (e.g. `enable_thinking`); `--reasoning-format` controls thought extraction.
+
+## Nanobot-inspired architecture choices adopted in vivo
+- We kept the real-time voice stack intact, but borrowed one of nanobot's best patterns: a small tool registry for discovery and validation.
+- `app/tools.py` now exposes a typed `ToolRegistry` + `ToolDefinition` abstraction so tool names, required params, and schemas are centralised instead of being implicit in a flat dispatch function.
+- This is intentionally a lightweight subset of nanobot's approach: no gateway, no provider stack, no chat-app abstraction. The goal is to keep vivo focused on voice while gaining the maintainability benefits of a proper tool layer.
+- The pattern is a good foundation for future user-defined or plugin tools, without changing the live audio pipeline or broadening the project into a full nanobot-style framework.

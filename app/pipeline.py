@@ -50,7 +50,8 @@ Protocol (JSON text frames unless noted):
     {"type":"transcript","text"}
     {"type":"agent_text","delta"}   LLM text, streamed as generated
     {"type":"tool","name","result"} a tool was executed
-    binary                    int16 mono 48 kHz TTS PCM (one chunk per sentence)
+    binary                    int16 mono TTS PCM (one chunk per sentence,
+                                  sample rate in config.audio.tts_sample_rate)
     {"type":"barge_ack"}
     {"type":"reply_done"}       reply's audio is finished
     {"type":"error","message"}
@@ -322,14 +323,19 @@ class ThinkingFiller:
                 if idx == self._last_idx:
                     idx = (idx + 1) % len(FILLER_PHRASES)
                 self._last_idx = idx
-                self._count += 1
                 self._next_fill_at = now + config.THINK_FILLER_INTERVAL
-                n = self._count
-            phrase = FILLER_PHRASES[idx]
+                phrase = FILLER_PHRASES[idx]
             try:
-                self.q.put((n, phrase, "filler"), timeout=0.2)
-            except queue_mod.Empty:
-                continue  # TTS backlog: something is queued to speak already
+                self.q.put((self._count + 1, phrase, "filler"), timeout=0.2)
+            except queue_mod.Full:
+                # The TTS worker is already busy; skip the tick instead of
+                # hammering the queue while the backlog persists.
+                with self._lock:
+                    self._next_fill_at = time.monotonic() + config.THINK_FILLER_INTERVAL
+                continue
+            with self._lock:
+                self._count += 1
+                n = self._count
             self.bench.mark(f"filler_{n}_queued")
             log.info("filler %d queued (%.1fs into thinking): %s", n, silent, phrase)
 
@@ -636,9 +642,10 @@ def _handle_utterance(
         if worker is not None:
             q.put(_TTS_DONE)
             worker.join()
-        if session.barge_mono.get(gen) is not None:
+        barge_at = session.barge_mono.pop(gen, None)
+        if barge_at is not None:
             bench.cancelled = True
-            bench.record("barge_in", session.barge_mono[gen] - t_start)
+            bench.record("barge_in", barge_at - t_start)
             bench.mark("stale_stop")
         with session.lock:
             is_current = session.generation == gen
@@ -695,13 +702,16 @@ _ACTIVE: set[VoiceSession] = set()
 
 
 def barge_config_msg() -> dict:
-    """The `config` handshake frame (vivo.toml [barge_in])."""
+    """The `config` handshake frame (UI barge + audio settings)."""
     return {
         "type": "config",
         "barge_in": {
             "level_threshold": config.BARGE_LEVEL_THRESHOLD,
             "sustain_ms": config.BARGE_SUSTAIN_MS,
             "cooldown_ms": config.BARGE_COOLDOWN_MS,
+        },
+        "audio": {
+            "tts_sample_rate": config.TTS_SAMPLE_RATE,
         },
     }
 

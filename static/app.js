@@ -1,15 +1,15 @@
-/* vivo UI: mic -> WS (16 kHz int16 PCM) ; WS TTS (48 kHz int16 PCM) -> speaker.
+/* vivo UI: mic -> WS (16 kHz int16 PCM) ; WS TTS (48 kHz int16 PCM by default) -> speaker.
  *
  * Protocol (see app/pipeline.py):
  *   client -> server : binary 16 kHz int16 PCM,
  *                      {"type":"barge_in"|"flush"|"ping"|{"type":"session"[,"id":str]}}
- *   server -> client : JSON start|end|transcript|agent_text|tool|barge_ack|reply_done|error|session
- *                      + binary 48 kHz int16 mono TTS chunks (one per sentence)
+ *   server -> client : JSON start|end|transcript|agent_text|tool|barge_ack|reply_done|error|session|config
+ *                      + binary int16 mono TTS chunks (one per sentence; sample rate via config.audio.tts_sample_rate)
  */
 "use strict";
 
 const TARGET_MIC_RATE = 16000;
-const TARGET_PLAY_RATE = 48000;
+const DEFAULT_PLAY_RATE = 48000;
 
 /* Auto barge-in: while vivo is speaking, sustained mic level above the
  * threshold (your voice, after the browser's echo cancellation) interrupts
@@ -36,7 +36,10 @@ const el = {
   btnClear: $("btn-clear"),
   sessionSelect: $("session-select"),
   btnNewSession: $("btn-new-session"),
+  btnRenameSession: $("btn-rename-session"),
+  btnDeleteSession: $("btn-delete-session"),
   btnSettings: $("btn-settings"),
+  motionPreset: $("motion-preset"),
   settingsDlg: $("settings"),
   settingsBody: $("settings-body"),
   settingsMsg: $("settings-msg"),
@@ -63,6 +66,12 @@ const S = {
   bargePendingSince: null, // timestamp mic level started sustaining above threshold
   bargeCooldownUntil: 0, // suppress auto-barge re-triggers until this time
   dropAudio: false, // ignore in-flight TTS frames after a barge until the next `end`
+  ttsSampleRate: DEFAULT_PLAY_RATE,
+  motionPreset: "balanced",
+  prefersReducedMotion: false,
+  blink: { active: false, startedAt: 0, duration: 0, nextAt: 0, doubleBlink: false },
+  hydrateToken: 0,
+  sessionsById: {},
 };
 
 try { S.sessionId = localStorage.getItem("vivo.session"); } catch (_) { S.sessionId = null; }
@@ -235,7 +244,8 @@ function enqueueTTS(buf) {
   if (!int16.length) return;
   const float = new Float32Array(int16.length);
   for (let i = 0; i < int16.length; i++) float[i] = int16[i] / 32768;
-  const audioBuf = p.ctx.createBuffer(1, float.length, TARGET_PLAY_RATE);
+  const rate = Number.isFinite(S.ttsSampleRate) ? S.ttsSampleRate : DEFAULT_PLAY_RATE;
+  const audioBuf = p.ctx.createBuffer(1, float.length, rate);
   audioBuf.copyToChannel(float, 0);
 
   const src = p.ctx.createBufferSource();
@@ -313,6 +323,10 @@ function handleServerJson(m) {
           cooldownMs: m.barge_in.cooldown_ms ?? S.bargeCfg.cooldownMs,
         };
       }
+      if (m.audio) {
+        const sr = Number(m.audio.tts_sample_rate);
+        if (Number.isFinite(sr) && sr >= 8000 && sr <= 96000) S.ttsSampleRate = sr;
+      }
       return; // config never touches the status UI
     case "start":
       setPipeline("listening");
@@ -348,9 +362,10 @@ function handleServerJson(m) {
       // conversation this tab is bound to
       rememberSession(m.id);
       el.sessionSelect.disabled = false;
-      const known = [...el.sessionSelect.options].some((o) => o.value === m.id);
-      if (!known) loadSessions();
-      else el.sessionSelect.value = m.id;
+      loadSessions().then(() => {
+        el.sessionSelect.value = m.id;
+      });
+      hydrateTranscript(m.id);
       if (m.created) addEntry("hint", "&mdash; new conversation &mdash;");
       return; // never touches the status UI
     case "pong":
@@ -390,6 +405,31 @@ function escapeHtml(s) {
   return s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 }
 
+async function hydrateTranscript(sessionId) {
+  if (!sessionId) return;
+  const token = ++S.hydrateToken;
+  let j;
+  try {
+    const res = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}/transcript`);
+    if (!res.ok) return;
+    j = await res.json();
+  } catch (_) {
+    return;
+  }
+  if (token !== S.hydrateToken || sessionId !== S.sessionId) return;
+
+  el.transcript.innerHTML = "";
+  S.currentVivoEntry = null;
+
+  if (j.summary) {
+    addEntry("hint", `Earlier summary: ${escapeHtml(String(j.summary))}`);
+  }
+  for (const turn of j.turns || []) {
+    if (turn.user) addEntry("you", escapeHtml(String(turn.user)));
+    if (turn.assistant) addEntry("vivo", escapeHtml(String(turn.assistant)));
+  }
+}
+
 /* ---------------- sessions (T021) ----------------
  * Each tab binds to one named conversation (by default the server's active
  * one) and remembers it in localStorage. "new" starts a fresh conversation,
@@ -417,16 +457,88 @@ async function loadSessions() {
   }
   const sel = el.sessionSelect;
   sel.innerHTML = "";
+  S.sessionsById = {};
   for (const s of j.sessions) {
+    S.sessionsById[s.id] = s;
     const opt = document.createElement("option");
     opt.value = s.id;
-    opt.textContent = formatSessionId(s.id) + (s.active ? " (active)" : "");
+    const title = (s.name || "").trim() || formatSessionId(s.id);
+    opt.textContent = title + (s.active ? " (active)" : "");
     sel.appendChild(opt);
   }
   const known = S.sessionId && [...sel.options].some((o) => o.value === S.sessionId);
   if (!known) S.sessionId = j.active; // remembered session vanished: follow the server
   if (S.sessionId) sel.value = S.sessionId;
   sel.disabled = false;
+}
+
+async function renameSelectedSession() {
+  const id = el.sessionSelect.value;
+  if (!id) return;
+  const meta = S.sessionsById[id] || {};
+  const current = (meta.name || "").trim();
+  const fallback = formatSessionId(id);
+  const name = prompt(
+    `Rename conversation (${fallback}). Leave blank to reset to auto label.`,
+    current
+  );
+  if (name === null) return;
+
+  let res;
+  try {
+    res = await fetch(`/api/sessions/${encodeURIComponent(id)}/rename`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name }),
+    });
+  } catch (err) {
+    addEntry("error", `rename failed: ${escapeHtml(err.message || String(err))}`);
+    return;
+  }
+  if (!res.ok) {
+    let msg = `HTTP ${res.status}`;
+    try {
+      const j = await res.json();
+      if (j && j.detail) msg = String(j.detail);
+    } catch (_) {}
+    addEntry("error", `rename failed: ${escapeHtml(msg)}`);
+    return;
+  }
+  await loadSessions();
+  if (S.sessionId) el.sessionSelect.value = S.sessionId;
+}
+
+async function deleteSelectedSession() {
+  const id = el.sessionSelect.value;
+  if (!id) return;
+  const meta = S.sessionsById[id] || {};
+  const title = (meta.name || "").trim() || formatSessionId(id);
+  if (!confirm(`Delete conversation "${title}"? This cannot be undone.`)) return;
+
+  let res;
+  try {
+    res = await fetch(`/api/sessions/${encodeURIComponent(id)}`, { method: "DELETE" });
+  } catch (err) {
+    addEntry("error", `delete failed: ${escapeHtml(err.message || String(err))}`);
+    return;
+  }
+  if (!res.ok) {
+    let msg = `HTTP ${res.status}`;
+    try {
+      const j = await res.json();
+      if (j && j.detail) msg = String(j.detail);
+    } catch (_) {}
+    addEntry("error", `delete failed: ${escapeHtml(msg)}`);
+    return;
+  }
+
+  let active = null;
+  try {
+    const j = await res.json();
+    active = j && j.active;
+  } catch (_) {}
+  await loadSessions();
+  if (active) sendJson({ type: "session", id: active });
 }
 
 /* ---------------- status ---------------- */
@@ -467,6 +579,140 @@ const STATE_COLORS = {
   speaking: ["#fde68a", "#b45309"],
 };
 
+const MOTION_PRESETS = {
+  calm: {
+    levelGrow: 0.35,
+    wobbleBase: 0.02,
+    wobbleLevel: 0.11,
+    bubbleDrift: 0.014,
+    mouthOpenBase: 0.045,
+    mouthOpenLevel: 0.12,
+    mouthJitter: 0.006,
+  },
+  balanced: {
+    levelGrow: 0.55,
+    wobbleBase: 0.03,
+    wobbleLevel: 0.16,
+    bubbleDrift: 0.022,
+    mouthOpenBase: 0.06,
+    mouthOpenLevel: 0.17,
+    mouthJitter: 0.009,
+  },
+  expressive: {
+    levelGrow: 0.75,
+    wobbleBase: 0.045,
+    wobbleLevel: 0.24,
+    bubbleDrift: 0.033,
+    mouthOpenBase: 0.08,
+    mouthOpenLevel: 0.23,
+    mouthJitter: 0.013,
+  },
+};
+
+const MOTION = { ...MOTION_PRESETS.balanced };
+const VISUAL_TRANSITION_MS = 260;
+const BLINK = {
+  gapMinMs: 2600,
+  gapMaxMs: 7800,
+  durationMinMs: 150,
+  durationMaxMs: 240,
+  closedHoldMinMs: 30,
+  closedHoldMaxMs: 70,
+  doubleChance: 0.18,
+  doubleGapMinMs: 140,
+  doubleGapMaxMs: 260,
+};
+const visual = {
+  from: "idle",
+  to: "idle",
+  startedAt: performance.now(),
+};
+
+function clamp01(v) {
+  return Math.max(0, Math.min(1, v));
+}
+
+function randRange(min, max) {
+  return min + Math.random() * (max - min);
+}
+
+function lerp(a, b, t) {
+  return a + (b - a) * t;
+}
+
+function hexToRgb(hex) {
+  const h = hex.replace("#", "");
+  return {
+    r: parseInt(h.slice(0, 2), 16),
+    g: parseInt(h.slice(2, 4), 16),
+    b: parseInt(h.slice(4, 6), 16),
+  };
+}
+
+function mixHex(a, b, t) {
+  const aa = hexToRgb(a);
+  const bb = hexToRgb(b);
+  const r = Math.round(lerp(aa.r, bb.r, t));
+  const g = Math.round(lerp(aa.g, bb.g, t));
+  const bl = Math.round(lerp(aa.b, bb.b, t));
+  return `rgb(${r}, ${g}, ${bl})`;
+}
+
+function visualProgress(now) {
+  return clamp01((now - visual.startedAt) / VISUAL_TRANSITION_MS);
+}
+
+function updateVisualTarget(nextState, now) {
+  if (visual.to === nextState) return;
+  visual.from = visual.to;
+  visual.to = nextState;
+  visual.startedAt = now;
+}
+
+function stateWeight(name, p) {
+  if (visual.from === visual.to) return visual.to === name ? 1 : 0;
+  const fromW = visual.from === name ? 1 - p : 0;
+  const toW = visual.to === name ? p : 0;
+  return fromW + toW;
+}
+
+function applyMotionPreset(name, persist = true) {
+  const key = Object.prototype.hasOwnProperty.call(MOTION_PRESETS, name) ? name : "balanced";
+  S.motionPreset = key;
+  if (el.motionPreset) el.motionPreset.value = key;
+
+  const scale = S.prefersReducedMotion ? 0.62 : 1;
+  const src = MOTION_PRESETS[key];
+  for (const k of Object.keys(MOTION)) MOTION[k] = src[k] * scale;
+
+  if (persist) {
+    try { localStorage.setItem("vivo.motionPreset", key); } catch (_) {}
+  }
+}
+
+function setReducedMotion(enabled) {
+  S.prefersReducedMotion = !!enabled;
+  applyMotionPreset(S.motionPreset, false);
+}
+
+function initMotionControls() {
+  let saved = null;
+  try { saved = localStorage.getItem("vivo.motionPreset"); } catch (_) {}
+  S.motionPreset = Object.prototype.hasOwnProperty.call(MOTION_PRESETS, saved) ? saved : "balanced";
+
+  if (window.matchMedia) {
+    const mq = window.matchMedia("(prefers-reduced-motion: reduce)");
+    setReducedMotion(mq.matches);
+    const onChange = (ev) => setReducedMotion(ev.matches);
+    if (mq.addEventListener) mq.addEventListener("change", onChange);
+    else if (mq.addListener) mq.addListener(onChange);
+  } else {
+    setReducedMotion(false);
+  }
+
+  applyMotionPreset(S.motionPreset, false);
+}
+
 function currentDotState() {
   if (S.wsState !== "open") return S.wsState;
   if (S.play && S.play.sources.size > 0) return "speaking";
@@ -478,13 +724,245 @@ function smoothLevel(prev, target) {
   return prev + (target - prev) * coef;
 }
 
-function blinkScale(time) {
-  const cycle = time % 3.6;
-  if (cycle > 3.25) {
-    const p = (cycle - 3.25) / 0.35;
-    return 1 - 0.92 * Math.sin(Math.PI * p);
+function resetBlinkSchedule(now = performance.now()) {
+  S.blink.active = false;
+  S.blink.startedAt = 0;
+  S.blink.duration = 0;
+  S.blink.closedHold = 0;
+  S.blink.doubleBlink = false;
+  S.blink.nextAt = now + randRange(BLINK.gapMinMs, BLINK.gapMaxMs);
+}
+
+function blinkScale(now) {
+  const blink = S.blink;
+  if (!blink.nextAt) resetBlinkSchedule(now);
+
+  if (!blink.active && now >= blink.nextAt) {
+    blink.active = true;
+    blink.startedAt = now;
+    blink.duration = randRange(BLINK.durationMinMs, BLINK.durationMaxMs);
+    blink.closedHold = randRange(BLINK.closedHoldMinMs, BLINK.closedHoldMaxMs);
+    blink.doubleBlink = Math.random() < BLINK.doubleChance;
   }
-  return 1;
+
+  if (!blink.active) return 1;
+
+  const elapsed = now - blink.startedAt;
+  const closeDur = blink.duration * 0.42;
+  const openDur = blink.duration * 0.58;
+  let scale = 1;
+
+  if (elapsed < closeDur) {
+    const p = clamp01(elapsed / closeDur);
+    const eased = 1 - Math.cos((Math.PI * p) / 2);
+    scale = 1 - 0.92 * eased;
+  } else if (elapsed < closeDur + blink.closedHold) {
+    scale = 0.08;
+  } else if (elapsed < blink.duration) {
+    const p = clamp01((elapsed - closeDur - blink.closedHold) / openDur);
+    const eased = Math.sin((Math.PI * p) / 2);
+    scale = 0.08 + 0.92 * eased;
+  }
+
+  if (elapsed >= blink.duration) {
+    if (blink.doubleBlink) {
+      blink.active = false;
+      blink.startedAt = 0;
+      blink.duration = 0;
+      blink.closedHold = 0;
+      blink.doubleBlink = false;
+      blink.nextAt = now + randRange(BLINK.doubleGapMinMs, BLINK.doubleGapMaxMs);
+    } else {
+      resetBlinkSchedule(now);
+    }
+  }
+
+  return scale;
+}
+
+function drawIdleBreath(cx, cy, R, time, weight) {
+  if (weight < 0.02) return;
+  const pulse = 0.5 + 0.5 * Math.sin(time * 1.05);
+  const scale = 1 + 0.018 * pulse * weight;
+  const glow = 0.06 + 0.08 * pulse * weight;
+
+  c2d.save();
+  c2d.globalAlpha = glow;
+  c2d.strokeStyle = "rgba(255, 255, 255, 0.9)";
+  c2d.lineWidth = Math.max(1.5, R * 0.02);
+  c2d.beginPath();
+  c2d.arc(cx, cy, R * scale * 0.82, 0, Math.PI * 2);
+  c2d.stroke();
+  c2d.globalAlpha = glow * 0.7;
+  c2d.beginPath();
+  c2d.arc(cx, cy, R * scale * 0.64, 0, Math.PI * 2);
+  c2d.stroke();
+  c2d.restore();
+}
+
+function drawListeningRings(cx, cy, R, time, weight) {
+  if (weight < 0.02) return;
+  const pulse = 0.5 + 0.5 * Math.sin(time * 2.2);
+  const spin = time * 1.25;
+  const rings = [0.84, 1.04];
+
+  c2d.save();
+  c2d.lineCap = "round";
+  c2d.lineWidth = Math.max(1.6, R * 0.018);
+  for (let i = 0; i < rings.length; i++) {
+    const rr = R * rings[i];
+    const start = spin + i * 0.95;
+    const span = Math.PI * (0.5 + 0.14 * pulse);
+    c2d.strokeStyle = `rgba(102, 255, 190, ${0.15 + 0.12 * weight})`;
+    c2d.beginPath();
+    c2d.arc(cx, cy, rr, start, start + span);
+    c2d.stroke();
+  }
+
+  const dots = [
+    { a: spin * 0.9, r: R * 1.08 },
+    { a: spin * 0.9 + 2.1, r: R * 1.08 },
+  ];
+  for (const dot of dots) {
+    const x = cx + Math.cos(dot.a) * dot.r;
+    const y = cy + Math.sin(dot.a) * dot.r;
+    c2d.beginPath();
+    c2d.fillStyle = `rgba(176, 255, 225, ${(0.12 + 0.12 * pulse) * weight})`;
+    c2d.arc(x, y, Math.max(1.4, R * 0.028), 0, Math.PI * 2);
+    c2d.fill();
+  }
+  c2d.restore();
+}
+
+function drawConnectingOrbit(cx, cy, R, time, weight) {
+  if (weight < 0.02) return;
+  const spin = time * 1.8;
+  const orbit = R * 1.08;
+  const dash = R * 0.22;
+
+  c2d.save();
+  c2d.lineCap = "round";
+  c2d.setLineDash([dash, dash * 0.7]);
+  c2d.lineDashOffset = -spin * 12;
+  c2d.strokeStyle = `rgba(200, 220, 255, ${0.12 + 0.15 * weight})`;
+  c2d.lineWidth = Math.max(1.5, R * 0.018);
+  c2d.beginPath();
+  c2d.arc(cx, cy, orbit, 0, Math.PI * 2);
+  c2d.stroke();
+  c2d.setLineDash([]);
+
+  for (let i = 0; i < 3; i++) {
+    const a = spin + i * (Math.PI * 2 / 3);
+    const x = cx + Math.cos(a) * orbit;
+    const y = cy + Math.sin(a) * orbit;
+    c2d.beginPath();
+    c2d.fillStyle = `rgba(255, 255, 255, ${(0.2 + 0.2 * Math.sin(time * 2.8 + i)) * weight})`;
+    c2d.arc(x, y, Math.max(1.6, R * 0.024), 0, Math.PI * 2);
+    c2d.fill();
+  }
+  c2d.restore();
+}
+
+function drawClosedFlicker(cx, cy, R, time, weight) {
+  if (weight < 0.02) return;
+  const flicker = 0.5 + 0.5 * Math.sin(time * 3.7);
+  const alpha = (0.08 + 0.08 * flicker) * weight;
+
+  c2d.save();
+  c2d.globalAlpha = alpha;
+  c2d.strokeStyle = "rgba(255, 120, 126, 0.95)";
+  c2d.lineWidth = Math.max(1.5, R * 0.02);
+  c2d.beginPath();
+  c2d.moveTo(cx - R * 0.35, cy - R * 0.32);
+  c2d.lineTo(cx + R * 0.35, cy + R * 0.32);
+  c2d.moveTo(cx + R * 0.35, cy - R * 0.32);
+  c2d.lineTo(cx - R * 0.35, cy + R * 0.32);
+  c2d.stroke();
+  c2d.restore();
+}
+
+function drawThinkingBubbles(cx, cy, R, time, weight) {
+  if (weight < 0.02) return;
+  const phase = time * 0.95;
+  const baseX = cx + R * 0.58;
+  const baseY = cy - R * 0.72;
+  const bubbles = [
+    { d: 0.0, x: 0.00, y: 0.00, r: 0.12, a: 0.34 },
+    { d: 0.7, x: 0.22, y: -0.24, r: 0.17, a: 0.30 },
+    { d: 1.4, x: 0.44, y: -0.48, r: 0.22, a: 0.26 },
+  ];
+
+  c2d.save();
+  for (const b of bubbles) {
+    const k = (Math.sin(phase + b.d) + 1) * 0.5;
+    const alpha = b.a * (0.65 + 0.35 * k) * weight;
+    const bob = Math.sin(phase * 0.9 + b.d) * R * MOTION.bubbleDrift;
+    const x = baseX + R * b.x;
+    const y = baseY + R * b.y + bob;
+    const r = R * b.r * (0.9 + 0.2 * k);
+
+    c2d.beginPath();
+    c2d.fillStyle = `rgba(220, 236, 255, ${alpha.toFixed(3)})`;
+    c2d.arc(x, y, r, 0, Math.PI * 2);
+    c2d.fill();
+
+    c2d.beginPath();
+    c2d.fillStyle = `rgba(255, 255, 255, ${(alpha * 0.65).toFixed(3)})`;
+    c2d.arc(x - r * 0.28, y - r * 0.28, r * 0.24, 0, Math.PI * 2);
+    c2d.fill();
+  }
+  c2d.restore();
+}
+
+function drawMouth(cx, cy, R, speakingWeight, thinkingWeight, playLevel, time) {
+  const speaking = speakingWeight > 0.03;
+  const mouthY = cy + R * 0.33;
+  const halfW = R * 0.22;
+  const jitter = speaking ? Math.sin(time * 15) * R * MOTION.mouthJitter * speakingWeight : 0;
+  const open = R * 0.022 + (R * (MOTION.mouthOpenBase + playLevel * MOTION.mouthOpenLevel) * speakingWeight) + Math.abs(jitter);
+  const smile = R * (0.02 - 0.06 * thinkingWeight);
+
+  c2d.save();
+  c2d.lineCap = "round";
+
+  // outer lip
+  c2d.beginPath();
+  c2d.strokeStyle = "rgba(10, 10, 16, 0.85)";
+  c2d.lineWidth = Math.max(2, R * 0.045);
+  c2d.moveTo(cx - halfW, mouthY);
+  c2d.quadraticCurveTo(cx, mouthY + open + smile, cx + halfW, mouthY);
+  c2d.stroke();
+
+  // mouth cavity when speaking
+  if (speaking) {
+    c2d.beginPath();
+    c2d.fillStyle = `rgba(12, 8, 12, ${0.25 + 0.42 * speakingWeight})`;
+    c2d.moveTo(cx - halfW * 0.78, mouthY + R * 0.01);
+    c2d.quadraticCurveTo(cx, mouthY + open * 1.18, cx + halfW * 0.78, mouthY + R * 0.01);
+    c2d.quadraticCurveTo(cx, mouthY + R * 0.028, cx - halfW * 0.78, mouthY + R * 0.01);
+    c2d.fill();
+  }
+
+  c2d.restore();
+}
+
+function drawSpeakingWave(cx, cy, R, time, weight) {
+  if (weight < 0.02) return;
+  const pulse = 0.5 + 0.5 * Math.sin(time * 2.7);
+  const x = cx + R * (0.36 + 0.05 * pulse);
+  const y = cy + R * 0.03;
+
+  c2d.save();
+  c2d.strokeStyle = `rgba(255, 244, 214, ${(0.08 + 0.15 * pulse) * weight})`;
+  c2d.lineWidth = Math.max(1.5, R * 0.018);
+  c2d.lineCap = "round";
+  c2d.beginPath();
+  c2d.arc(x, y, R * (0.16 + 0.03 * pulse), -0.8, 0.8);
+  c2d.stroke();
+  c2d.beginPath();
+  c2d.arc(x + R * 0.08, y, R * (0.24 + 0.03 * pulse), -0.82, 0.82);
+  c2d.stroke();
+  c2d.restore();
 }
 
 function frame() {
@@ -492,16 +970,26 @@ function frame() {
   S.micLevel = smoothLevel(S.micLevel, S.micLevelTarget);
   S.playLevel = smoothLevel(S.playLevel, readPlayLevel());
 
+  const now = performance.now();
+
   const w = canvas.width, h = canvas.height;
   c2d.clearRect(0, 0, w, h);
   const cx = w / 2, cy = h / 2;
 
   const level = Math.max(S.micLevel, S.playLevel);
   const base = Math.min(w, h) * 0.17;
-  const grow = 1 + level * 0.85;
+  const grow = 1 + level * MOTION.levelGrow;
   const R = base * grow;
-  const wobbleAmt = 0.04 + level * 0.30;
-  const [inner, outer] = STATE_COLORS[currentDotState()];
+  const wobbleAmt = MOTION.wobbleBase + level * MOTION.wobbleLevel;
+  const dotState = currentDotState();
+  updateVisualTarget(dotState, now);
+  const progress = visualProgress(now);
+  const fromColors = STATE_COLORS[visual.from] || STATE_COLORS.idle;
+  const toColors = STATE_COLORS[visual.to] || STATE_COLORS.idle;
+  const inner = mixHex(fromColors[0], toColors[0], progress);
+  const outer = mixHex(fromColors[1], toColors[1], progress);
+  const speakingWeight = stateWeight("speaking", progress);
+  const thinkingWeight = stateWeight("thinking", progress);
 
   const N = 96;
   c2d.beginPath();
@@ -527,8 +1015,18 @@ function frame() {
   c2d.fill();
   c2d.shadowBlur = 0;
 
+  const idleWeight = stateWeight("idle", progress);
+  const listeningWeight = stateWeight("listening", progress);
+  const connectingWeight = stateWeight("connecting", progress);
+  const closedWeight = stateWeight("closed", progress);
+
+  drawIdleBreath(cx, cy, R, t, idleWeight);
+  drawListeningRings(cx, cy, R, t, listeningWeight);
+  drawConnectingOrbit(cx, cy, R, t, connectingWeight);
+  drawClosedFlicker(cx, cy, R, t, closedWeight);
+
   // eyes
-  const blink = blinkScale(t);
+  const blink = blinkScale(now);
   const eyeR = R * 0.12;
   const eyeDX = R * 0.34, eyeDY = -R * 0.08;
   for (const side of [-1, 1]) {
@@ -545,6 +1043,10 @@ function frame() {
     c2d.fill();
     c2d.restore();
   }
+
+  drawMouth(cx, cy, R, speakingWeight, thinkingWeight, S.playLevel, t);
+  drawSpeakingWave(cx, cy, R, t, speakingWeight);
+  drawThinkingBubbles(cx, cy, R, t, thinkingWeight);
 
   el.meterFill.style.width = `${Math.round(S.micLevel * 100)}%`;
   requestAnimationFrame(frame);
@@ -941,10 +1443,16 @@ el.btnClear.addEventListener("click", () => {
 });
 
 el.btnNewSession.addEventListener("click", () => sendJson({ type: "session" }));
+el.btnRenameSession.addEventListener("click", renameSelectedSession);
+el.btnDeleteSession.addEventListener("click", deleteSelectedSession);
 
 el.sessionSelect.addEventListener("change", () => {
   if (el.sessionSelect.value) sendJson({ type: "session", id: el.sessionSelect.value });
 });
+
+if (el.motionPreset) {
+  el.motionPreset.addEventListener("change", () => applyMotionPreset(el.motionPreset.value));
+}
 
 el.btnSettings.addEventListener("click", openSettings);
 el.btnSettingsSave.addEventListener("click", saveSettings);
@@ -957,6 +1465,7 @@ el.settingsDlg.addEventListener("click", (ev) => {
 
 window.addEventListener("resize", resizeCanvas);
 window.addEventListener("load", () => {
+  initMotionControls();
   resizeCanvas();
   loadSessions().then(connectWS); // bind a session before opening the socket
   requestAnimationFrame(frame);

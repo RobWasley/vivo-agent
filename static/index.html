@@ -5,51 +5,84 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>vivo</title>
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ccircle cx='50' cy='50' r='42' fill='%234fd1c5'/%3E%3Ccircle cx='38' cy='44' r='7' fill='%230b0b10'/%3E%3Ccircle cx='62' cy='44' r='7' fill='%230b0b10'/%3E%3C/svg%3E">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
-  <header>
-    <div class="brand">
-      <span class="brand-dot"></span>
-      <h1>vivo</h1>
-    </div>
-    <div class="status" id="status" data-state="connecting">
-      <span class="status-led"></span>
-      <span class="status-label" id="status-label">Connecting&hellip;</span>
-    </div>
-  </header>
+  <div class="ambient" aria-hidden="true">
+    <div class="ambient-shape ambient-shape-a"></div>
+    <div class="ambient-shape ambient-shape-b"></div>
+  </div>
 
-  <main>
-    <section class="stage">
-      <canvas id="dot"></canvas>
-      <div class="meter" title="input level">
-        <div class="meter-fill" id="meter-fill"></div>
-      </div>
-    </section>
-
-    <aside class="sidebar">
-      <div class="sidebar-head">
-        <h2>Transcript</h2>
-        <button class="ghost" id="btn-clear" title="Clear transcript">clear</button>
-      </div>
-      <div class="transcript" id="transcript">
-        <div class="entry entry-hint">
-          <span class="who">vivo</span>
-          <p>Hit <b>start</b>, then talk. I&rsquo;ll listen, think, and answer out loud.</p>
+  <div class="app-shell">
+    <header class="topbar">
+      <div class="brand">
+        <span class="brand-dot"></span>
+        <div class="brand-copy">
+          <h1>vivo</h1>
+          <p>Voice-native desktop agent</p>
         </div>
       </div>
-    </aside>
-  </main>
+      <div class="status" id="status" data-state="connecting" aria-live="polite">
+        <span class="status-led"></span>
+        <span class="status-label" id="status-label">Connecting&hellip;</span>
+      </div>
+    </header>
 
-  <footer class="controls">
-    <button class="primary" id="btn-start">start</button>
-    <button id="btn-barage" title="Interrupt me now">barage in</button>
-    <button class="ghost" id="btn-flush" title="Finish the current utterance">flush</button>
-    <select id="session-select" class="session-select" title="Conversation" disabled></select>
-    <button class="ghost" id="btn-new-session" title="Start a new conversation">new</button>
-    <button class="ghost" id="btn-settings" title="Settings">settings</button>
-    <span class="hint" id="hint">mic off &middot; click <b>start</b> to allow the microphone</span>
-  </footer>
+    <main class="layout">
+      <section class="stage panel">
+        <div class="stage-head">
+          <h2>Live Voice</h2>
+          <p>Listen, think, and speak with barge-in control.</p>
+        </div>
+        <div class="stage-canvas-wrap">
+          <canvas id="dot" aria-label="Vivo state blob"></canvas>
+          <div class="meter" title="input level">
+            <div class="meter-fill" id="meter-fill"></div>
+          </div>
+        </div>
+      </section>
+
+      <aside class="sidebar panel">
+        <div class="sidebar-head">
+          <h2>Transcript</h2>
+          <button class="ghost" id="btn-clear" title="Clear transcript">clear</button>
+        </div>
+        <div class="transcript" id="transcript">
+          <div class="entry entry-hint">
+            <span class="who">vivo</span>
+            <p>Hit <b>start</b>, then talk. I&rsquo;ll listen, think, and answer out loud.</p>
+          </div>
+        </div>
+      </aside>
+    </main>
+
+    <footer class="controls panel">
+      <div class="control-row control-row-primary">
+        <button class="primary" id="btn-start">start</button>
+        <button id="btn-barage" title="Interrupt me now">barge in</button>
+        <button class="ghost" id="btn-flush" title="Finish the current utterance">flush</button>
+      </div>
+      <div class="control-row control-row-secondary">
+        <select id="session-select" class="session-select" title="Conversation" disabled></select>
+        <button class="ghost" id="btn-new-session" title="Start a new conversation">new</button>
+        <button class="ghost" id="btn-rename-session" title="Rename selected conversation">rename</button>
+        <button class="ghost" id="btn-delete-session" title="Delete selected conversation">delete</button>
+        <button class="ghost" id="btn-settings" title="Settings">settings</button>
+        <label class="motion-control" for="motion-preset">
+          <span>motion</span>
+          <select id="motion-preset" title="Animation intensity">
+            <option value="calm">calm</option>
+            <option value="balanced" selected>balanced</option>
+            <option value="expressive">expressive</option>
+          </select>
+        </label>
+      </div>
+      <p class="hint" id="hint">mic off &middot; click <b>start</b> to allow the microphone</p>
+    </footer>
+  </div>
 
   <dialog id="settings" class="settings">
     <div class="settings-head">

@@ -8,7 +8,8 @@ from __future__ import annotations
 
 import datetime
 import os
-from typing import List
+from dataclasses import dataclass
+from typing import Any, Callable, Dict, List
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import httpx
@@ -65,6 +66,80 @@ WMO_CODES = {
 }
 
 MAX_READ_CHARS = 4000
+
+
+@dataclass
+class ToolDefinition:
+    name: str
+    description: str
+    parameters: dict
+    func: Callable[..., str]
+
+    def to_schema(self) -> dict:
+        return {
+            "type": "function",
+            "function": {
+                "name": self.name,
+                "description": self.description,
+                "parameters": self.parameters,
+            },
+        }
+
+
+class ToolRegistry:
+    """Minimal nanobot-style registry for tool discovery and validation."""
+
+    def __init__(self):
+        self._tools: Dict[str, ToolDefinition] = {}
+
+    def register(self, tool: ToolDefinition) -> None:
+        self._tools[tool.name] = tool
+
+    def get(self, name: str) -> ToolDefinition | None:
+        return self._tools.get(name)
+
+    def execute(self, name: str, args: dict | None) -> str:
+        tool = self.get(name)
+        if tool is None:
+            return f"error: unknown tool: {name}"
+
+        payload = args if isinstance(args, dict) else {}
+        params = tool.parameters.get("properties", {})
+        required = tool.parameters.get("required", [])
+        missing = [key for key in required if key not in payload]
+        if missing:
+            return "error: missing required parameter(s): " + ", ".join(missing)
+
+        kwargs: Dict[str, Any] = {}
+        for key, value in payload.items():
+            if key in params:
+                if params[key].get("type") == "integer" and value is not None and not isinstance(value, int):
+                    try:
+                        value = int(value)
+                    except (TypeError, ValueError):
+                        return f"error: invalid parameter '{key}': expected integer"
+                if params[key].get("type") == "number" and value is not None and not isinstance(value, (int, float)):
+                    try:
+                        value = float(value)
+                    except (TypeError, ValueError):
+                        return f"error: invalid parameter '{key}': expected number"
+                if params[key].get("type") == "string" and value is not None and not isinstance(value, str):
+                    value = str(value)
+                kwargs[key] = value
+
+        try:
+            return str(tool.func(**kwargs))
+        except TypeError as exc:
+            return f"error: invalid arguments: {exc}"
+        except Exception as exc:  # noqa: BLE001
+            return f"error: {exc}"
+
+    @property
+    def tool_names(self) -> List[str]:
+        return sorted(self._tools)
+
+    def get_definitions(self) -> List[dict]:
+        return [tool.to_schema() for tool in sorted(self._tools.values(), key=lambda tool: tool.name)]
 
 
 def get_time() -> str:
@@ -330,35 +405,44 @@ TOOLS: List[dict] = [
 
 
 def execute(name: str, args: dict) -> str:
-    try:
-        if name == "get_time":
-            result = get_time()
-        elif name == "weather":
-            result = weather(str(args.get("location", "")))
-        elif name == "read_file":
-            result = read_file(str(args["path"]))
-        elif name == "write_file":
-            result = write_file(str(args["path"]), str(args["content"]))
-        elif name == "list_dir":
-            result = list_dir(str(args.get("path", "")))
-        elif name == "exec":
-            result = shell_tool.run_shell(
-                str(args.get("command", "")),
-                working_dir=args.get("working_dir"),
-                timeout=args.get("timeout"),
+    registry = ToolRegistry()
+    for schema in TOOLS:
+        fn = schema["function"]
+        tool_name = fn["name"]
+        if tool_name == "get_time":
+            func = lambda: get_time()
+        elif tool_name == "weather":
+            func = lambda location="": weather(str(location))
+        elif tool_name == "read_file":
+            func = lambda path: read_file(str(path))
+        elif tool_name == "write_file":
+            func = lambda path, content: write_file(str(path), str(content))
+        elif tool_name == "list_dir":
+            func = lambda path="": list_dir(str(path))
+        elif tool_name == "exec":
+            func = lambda command="", working_dir=None, timeout=None: shell_tool.run_shell(
+                str(command),
+                working_dir=working_dir,
+                timeout=timeout,
             )
-        elif name == "web_search":
-            result = web_tool.web_search(
-                str(args.get("query", "")), count=args.get("count")
-            )
-        elif name == "web_fetch":
-            result = web_tool.web_fetch(
-                str(args.get("url", "")), max_chars=args.get("max_chars")
-            )
+        elif tool_name == "web_search":
+            func = lambda query="", count=None: web_tool.web_search(str(query), count=count)
+        elif tool_name == "web_fetch":
+            func = lambda url="", max_chars=None: web_tool.web_fetch(str(url), max_chars=max_chars)
         else:
-            return f"error: unknown tool: {name}"
-    except Exception as e:  # noqa: BLE001 - tool errors become model-visible text
-        return f"error: {e}"
+            continue
+        registry.register(
+            ToolDefinition(
+                name=tool_name,
+                description=fn["description"],
+                parameters=fn["parameters"],
+                func=func,
+            )
+        )
+
+    result = registry.execute(name, args)
+    if result.startswith("error:"):
+        return result
     return _cap_result(result)
 
 

@@ -11,7 +11,7 @@ base_url = "http://host.docker.internal:8080/v1"
 # Model name the LLM server serves, e.g. qwen3.8-27b.
 model = "qwen3.8-27b"
 # Let the model reason before answering. Adds latency but improves answers, especially with tools. vivo speaks filler phrases while it thinks.
-thinking = true
+thinking = false
 # Generation budget per reply (thinking + answer together). Too low truncates answers; too high wastes latency.
 max_tokens = 608
 
@@ -36,9 +36,9 @@ phrases = ["Let me think about that.", "Working on it.", "One moment.", "Give me
 # The voice vivo speaks with: a reference clip (3-30 s of clear speech) that is cloned. Upload or record one below.
 tts_voice = "default"
 # Speech-rate multiplier applied to the cloned voice: 1.0 is the model's natural pace, higher is faster.
-tts_speed = 0.7
+tts_speed = 0.8
 # Silence appended after each spoken sentence.
-sentence_pause_s = 0.05
+sentence_pause_s = 0.1
 # Hard split for long unpunctuated text. Shorter means the first audio arrives sooner at the cost of choppier phrasing.
 sentence_max_chars = 250
 # Split at clause punctuation (comma, semicolon, colon) once a sentence exceeds this length, so TTS can start before the whole sentence is generated. 0 disables it. Lower cuts first-audio latency; higher sounds smoother.

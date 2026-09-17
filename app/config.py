@@ -120,7 +120,9 @@ def _emit() -> None:
     )
 
     # --- Voice (TTS + chunking) ------------------------------------------------
-    g["TTS_VOICE"] = _get("voice", "tts_voice", "TTS_VOICE", "af_heart")
+    # Voice names are reference clips in <DATA_DIR>/voices (T022); "default" is
+    # seeded from the repo on first run (app/models.ensure_models).
+    g["TTS_VOICE"] = _get("voice", "tts_voice", "TTS_VOICE", "default")
     g["TTS_SPEED"] = _get("voice", "tts_speed", "TTS_SPEED", 1.0, float)
     g["TTS_SENTENCE_PAUSE"] = _get("voice", "sentence_pause_s", "TTS_SENTENCE_PAUSE", 0.2, float)
     # SentenceChunker hard-split threshold (chars) when no punctuation boundary is
@@ -135,7 +137,7 @@ def _emit() -> None:
     g["TTS_QUEUE_SIZE"] = _get("voice", "tts_queue_size", "TTS_QUEUE_SIZE", 2, int)
 
     g["AUDIO_SAMPLE_RATE"] = 16000
-    g["TTS_SAMPLE_RATE"] = 24000
+    g["TTS_SAMPLE_RATE"] = 48000
 
     # --- STT -------------------------------------------------------------------
     g["STT_MODEL"] = _get("stt", "model", "STT_MODEL", "small")
@@ -181,6 +183,8 @@ def _emit() -> None:
     # --- Deployment (env-only, docker-compose.yml) -------------------------------
     g["MODEL_DIR"] = os.environ.get("MODEL_DIR", "models")
     g["DATA_DIR"] = os.environ.get("DATA_DIR", "data")
+    # LuxTTS (onnxruntime) inference threads; not a user-facing setting (T022).
+    g["TTS_CPU_THREADS"] = int(os.environ.get("TTS_CPU_THREADS") or 8)
     # Agent workspace: mounted host dir that is the exec working directory and
     # the sandbox root for the file tools (read_file, write_file, list_dir).
     g["WORK_DIR"] = os.environ.get("WORK_DIR", g["DATA_DIR"])

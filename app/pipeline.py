@@ -2,8 +2,8 @@
 
 Flow per utterance: mic PCM (16 kHz) -> Silero VAD -> endpointing ->
 faster-whisper STT -> agent (llama.cpp, streaming, tools) -> sentence
-chunker -> bounded TTS queue -> kokoro TTS worker -> PCM chunks (24 kHz)
-back to the client.
+chunker -> bounded TTS queue -> LuxTTS voice-clone worker -> PCM chunks
+(48 kHz) back to the client.
 
 LLM and TTS run decoupled (T014): the utterance thread consumes the LLM
 stream and enqueues finished sentences on a bounded per-reply queue
@@ -35,17 +35,22 @@ Protocol (JSON text frames unless noted):
     binary            int16 mono 16 kHz PCM (any frame size)
     {"type":"barge_in"}   cancel the active reply (stop speaking, abort LLM)
     {"type":"flush"}      force-close an in-progress utterance
+    {"type":"session"}           start a new session, bind this connection to it
+    {"type":"session","id":str}  bind this connection to an existing session
     {"type":"ping"}       -> {"type":"pong"}
   server -> client
     {"type":"config","barge_in":{level_threshold,sustain_ms,cooldown_ms}}
                                   sent on connect and after settings are saved
                                   (T019); UI auto-barge timings (vivo.toml [barge_in])
+    {"type":"session","id":str[,"created":true]}
+                                  sent on connect (the session this connection
+                                  is bound to) and after a session command
     {"type":"start"}            VAD: speech started
     {"type":"end"}              VAD: utterance captured, processing begins
     {"type":"transcript","text"}
     {"type":"agent_text","delta"}   LLM text, streamed as generated
     {"type":"tool","name","result"} a tool was executed
-    binary                    int16 mono 24 kHz TTS PCM (one chunk per sentence)
+    binary                    int16 mono 48 kHz TTS PCM (one chunk per sentence)
     {"type":"barge_ack"}
     {"type":"reply_done"}       reply's audio is finished
     {"type":"error","message"}
@@ -55,6 +60,13 @@ sending barge_in, which frees the mic and invalidates the active reply at once
 (the interrupted worker finishes its current (uninterruptible) TTS step but can
 no longer send). The STT/TTS/agent engines are expensive and shared across
 connections; each connection owns its VAD state.
+
+Sessions (T021): conversation memory is split into named sessions managed by
+a SessionStore (app/conversation.py). A connection may connect with
+?session=<id> to pin a specific session; without it (or with an unknown id)
+it binds to the active session. Session commands rebind the connection AND
+make that session active for new connections; the new conversation applies
+from the next utterance. Sessions are also managed via /api/sessions.
 """
 
 from __future__ import annotations
@@ -73,7 +85,7 @@ import numpy as np
 
 from app import config, shell, tools
 from app.agent import Agent, ReasoningDelta, ToolRound
-from app.conversation import Conversation
+from app.conversation import SessionStore
 from app.stt import STT
 from app.tts import TTS
 from app.vad import VAD
@@ -310,6 +322,8 @@ class Engines:
             voice=config.TTS_VOICE,
             speed=config.TTS_SPEED,
             sentence_pause=config.TTS_SENTENCE_PAUSE,
+            data_dir=config.DATA_DIR,
+            cpu_threads=config.TTS_CPU_THREADS,
         )
         self.agent = Agent(
             config.LLM_BASE_URL, config.LLM_MODEL, config.PERSONA, tools=tools.TOOLS,
@@ -317,8 +331,8 @@ class Engines:
             max_tool_rounds=config.MAX_TOOL_ROUNDS,
             system_prompt=config.SYSTEM_PROMPT,
         )
-        self.conversation = Conversation(
-            data_path=os.path.join(config.DATA_DIR, "conversation.json"),
+        self.sessions = SessionStore(
+            data_dir=config.DATA_DIR,
             compact_after_chars=config.COMPACT_AFTER_CHARS,
             keep_recent_turns=config.KEEP_RECENT_TURNS,
         )
@@ -352,9 +366,9 @@ def apply_config(engines: Engines) -> None:
     s = engines.stt
     s.language = config.STT_LANGUAGE
     s.beam_size = config.STT_BEAM_SIZE
-    c = engines.conversation
-    c.compact_after_chars = config.COMPACT_AFTER_CHARS
-    c.keep_recent_turns = config.KEEP_RECENT_TURNS
+    engines.sessions.set_limits(
+        config.COMPACT_AFTER_CHARS, config.KEEP_RECENT_TURNS
+    )
     shell.MAX_TIMEOUT = config.EXEC_MAX_TIMEOUT  # shell.py snapshots it at import
     FILLER_PHRASES = config.FILLER_PHRASES  # ThinkingFiller reads the module global
 
@@ -362,10 +376,17 @@ def apply_config(engines: Engines) -> None:
 class VoiceSession:
     """Per-connection pipeline state."""
 
-    def __init__(self, ws, engines: Engines) -> None:
+    def __init__(self, ws, engines: Engines, session_id: str | None = None) -> None:
         self.ws = ws
         self.engines = engines
         self.loop = asyncio.get_running_loop()
+        store = engines.sessions
+        if session_id is not None and session_id not in store.ids():
+            log.warning("unknown session %r: binding to active %s",
+                        session_id, store.active_id)
+            session_id = None
+        self.session_id = session_id if session_id is not None else store.active_id
+        self.conversation = store.conversation_for(self.session_id)
         self.vad = VAD(
             threshold=config.VAD_THRESHOLD,
             min_speech_ms=config.VAD_MIN_SPEECH_MS,
@@ -385,6 +406,19 @@ class VoiceSession:
         """True while the reply of generation `gen` is still current."""
         with self.lock:
             return not self.closed and self.generation == gen
+
+    def switch_session(self, session_id: str) -> bool:
+        """Rebind this connection to another session (T021).
+
+        Affects the next utterance only: an in-flight reply keeps the
+        conversation it started with. False if the session is unknown.
+        """
+        store = self.engines.sessions
+        if session_id not in store.ids():
+            return False
+        self.session_id = session_id
+        self.conversation = store.conversation_for(session_id)
+        return True
 
     def release(self) -> None:
         """Barge-in: free the mic, invalidate the active reply, drain its queue.
@@ -484,6 +518,9 @@ def _handle_utterance(
     samples: np.ndarray, session: VoiceSession, gen: int, q: "queue_mod.Queue"
 ) -> None:
     engines = session.engines
+    # Pin this utterance's conversation now: a mid-reply session switch must
+    # not rewrite the history this reply reads from or writes to (T021).
+    conv = session.conversation
     t_start = time.monotonic()
     bench = Bench(t_start)
     text = ""
@@ -513,7 +550,7 @@ def _handle_utterance(
             max_chars=config.SENTENCE_MAX_CHARS,
             clause_max_chars=config.CLAUSE_MAX_CHARS,
         )
-        history = engines.conversation.messages()
+        history = conv.messages()
         filler = ThinkingFiller(session, gen, q, bench)
         filler.start()
 
@@ -580,8 +617,8 @@ def _handle_utterance(
                 session.tts_queue = None
         answer = "".join(spoken).strip()
         if answer:
-            engines.conversation.add_turn(text, answer)
-        engines.conversation.maybe_compact(engines.agent.summarize)
+            conv.add_turn(text, answer)
+        conv.maybe_compact(engines.agent.summarize)
         if is_current and not session.closed:
             session.send({"type": "reply_done"})
             bench.mark("reply_done")
@@ -647,9 +684,14 @@ def broadcast_config() -> None:
 
 
 async def serve_session(ws, engines: Engines) -> None:
-    session = VoiceSession(ws, engines)
+    # ?session=<id> pins this connection to a named session; default is the
+    # active one (unknown ids fall back in VoiceSession.__init__).
+    pinned = ws.query_params.get("session") if hasattr(ws, "query_params") else None
+    session = VoiceSession(ws, engines, session_id=pinned or None)
     _ACTIVE.add(session)
-    # UI tuning that used to be hardcoded in static/app.js (vivo.toml [barge_in]).
+    # Session handshake, then UI tuning that used to be hardcoded in
+    # static/app.js (vivo.toml [barge_in]).
+    session.send({"type": "session", "id": session.session_id})
     session.send(barge_config_msg())
     try:
         while True:
@@ -671,6 +713,19 @@ async def serve_session(ws, engines: Engines) -> None:
             if kind == "barge_in":
                 session.release()
                 session.send({"type": "barge_ack"})
+            elif kind == "session":
+                target = cmd.get("id")
+                if not target:
+                    new_id = engines.sessions.create()
+                    session.session_id = new_id
+                    session.conversation = engines.sessions.conversation_for(new_id)
+                    session.send({"type": "session", "id": new_id, "created": True})
+                    log.info("new session %s", new_id)
+                elif session.switch_session(target):
+                    engines.sessions.set_active(target)
+                    session.send({"type": "session", "id": target})
+                else:
+                    session.send({"type": "error", "message": f"unknown session: {target}"})
             elif kind == "flush":
                 for ev in session.vad.flush():
                     if ev.type == "start":

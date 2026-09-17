@@ -1,42 +1,39 @@
-"""Model download/management. Models live on a mounted volume and are
-downloaded once, on first run."""
+"""Model/asset bootstrap. Models live on a mounted volume (or the HF cache)
+and are fetched once, on first run.
+
+The LuxTTS CPU loader (zipvoice) resolves both of its models through the
+Hugging Face cache — set HF_HOME to persist them (compose: /models/hf) — so
+"download" here means pre-fetching into that cache. The faster-whisper model
+still downloads lazily on first transcription (download_root=model_dir).
+"""
 from __future__ import annotations
 
 import logging
-import os
+import shutil
 from pathlib import Path
-
-import httpx
 
 log = logging.getLogger("vivo.models")
 
-_RELEASE = "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.1"
+# Hugging Face repos the TTS engine needs (see app/tts.py).
+HF_REPOS = ("YatharthS/LuxTTS", "openai/whisper-tiny")
 
-KOKORO_FILES = {
-    "kokoro-v1.0.int8.onnx": f"{_RELEASE}/kokoro-v1.0.int8.onnx",
-    "voices-v1.0.bin": f"{_RELEASE}/voices-v1.0.bin",
-}
+# Voice reference clip shipped with the repo; seeded into <data>/voices on
+# first run so a fresh deployment has a voice out of the box (T022).
+DEFAULT_VOICE = "default"
+DEFAULT_VOICE_SRC = Path(__file__).resolve().parent.parent / "voices" / "default.wav"
 
 
-def ensure_models(model_dir: str) -> None:
-    """Download any missing model files into model_dir (idempotent).
+def ensure_models(model_dir: str, data_dir: str | None = None) -> None:
+    """Pre-fetch every model/asset (idempotent)."""
+    from huggingface_hub import snapshot_download
 
-    Kokoro files are fetched here; the faster-whisper model downloads
-    lazily on first transcription (download_root=model_dir).
-    """
-    kokoro_dir = Path(model_dir) / "kokoro"
-    kokoro_dir.mkdir(parents=True, exist_ok=True)
-    for name, url in KOKORO_FILES.items():
-        dest = kokoro_dir / name
-        if dest.exists() and dest.stat().st_size > 1_000_000:
-            log.info("model present: %s", dest)
-            continue
-        tmp = dest.with_suffix(dest.suffix + ".part")
-        log.info("downloading %s (%s)...", name, url)
-        with httpx.stream("GET", url, follow_redirects=True, timeout=600.0) as r:
-            r.raise_for_status()
-            with open(tmp, "wb") as f:
-                for chunk in r.iter_bytes(1 << 20):
-                    f.write(chunk)
-        tmp.rename(dest)
-        log.info("downloaded %s", dest)
+    for repo in HF_REPOS:
+        log.info("ensuring HF model: %s", repo)
+        snapshot_download(repo)
+    if data_dir is not None and DEFAULT_VOICE_SRC.is_file():
+        dst = Path(data_dir) / "voices" / f"{DEFAULT_VOICE}.wav"
+        if not dst.exists():
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(DEFAULT_VOICE_SRC, dst)
+            log.info("seeded default voice -> %s", dst)
+    Path(model_dir).mkdir(parents=True, exist_ok=True)

@@ -49,7 +49,7 @@ SHORT_FIX = os.path.join(REPO, "tests", "fixtures", "stt_sample.wav")
 LONG_FIX = os.path.join(REPO, "tests", "fixtures", "prompt_long.wav")
 OUT_DIR = os.path.join(REPO, "benchmarks")
 BENCH_RE = re.compile(r"bench gen=(\d+) (\{.*\})\s*$")
-SAMPLE_RATE_TTS = 24000
+SAMPLE_RATE_TTS = 48000
 FRAME = 3200  # mic frame size, samples (like the UI: 16 kHz frames)
 
 

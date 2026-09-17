@@ -25,26 +25,26 @@ system_prompt = "You are a hands-free voice assistant; your replies are spoken a
 [filler]
 # Thinking fillers
 # How long vivo waits without speakable text before starting to fill the silence with a phrase.
-first_after_s = 2
+first_after_s = 1.5
 # Gap between repeated filler phrases while the model keeps thinking.
-interval_s = 15
+interval_s = 25
 # Short phrases vivo speaks while thinking, one per line. Keep them brief — each one is synthesised separately.
-phrases = ["Let me think about that.", "Working on it.", "One moment.", "Hmm, give me a second.", "Still thinking.", "Let me work that out."]
+phrases = ["Let me think about that.", "Working on it.", "One moment.", "Give me a second.", "Still thinking.", "Let me work that out.", "This one's tricky... give me a moment."]
 
 [voice]
 # Voice (TTS)
-# Kokoro voice used for all speech.
-tts_voice = "af_heart"
-# Speech rate multiplier: 1.0 is natural, higher is faster.
-tts_speed = 1
-# Silence inserted between sentences within one synthesis.
-sentence_pause_s = 0.2
+# The voice vivo speaks with: a reference clip (3-30 s of clear speech) that is cloned. Upload or record one below.
+tts_voice = "default"
+# Speech-rate multiplier applied to the cloned voice: 1.0 is the model's natural pace, higher is faster.
+tts_speed = 0.7
+# Silence appended after each spoken sentence.
+sentence_pause_s = 0.05
 # Hard split for long unpunctuated text. Shorter means the first audio arrives sooner at the cost of choppier phrasing.
-sentence_max_chars = 90
+sentence_max_chars = 250
 # Split at clause punctuation (comma, semicolon, colon) once a sentence exceeds this length, so TTS can start before the whole sentence is generated. 0 disables it. Lower cuts first-audio latency; higher sounds smoother.
-clause_max_chars = 40
+clause_max_chars = 200
 # Sentences buffered between the LLM and TTS. Bigger hides TTS hiccups, smaller cuts latency.
-tts_queue_size = 2
+tts_queue_size = 1
 
 [stt]
 # Speech-to-text

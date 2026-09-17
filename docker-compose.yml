@@ -10,6 +10,9 @@ services:
       MODEL_DIR: /models
       DATA_DIR: /data
       WORK_DIR: /workspace
+      # LuxTTS resolves its models via the Hugging Face cache (T022); point it
+      # at the mounted /models volume so a first-run download is persistent.
+      HF_HOME: /models/hf
       # Every vivo.toml key can be overridden by its env var; unset (or empty)
       # falls back to the file, then the built-in default. Set the ones you
       # care about in a host .env — no need to edit this file.

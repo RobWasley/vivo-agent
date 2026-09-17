@@ -3,12 +3,12 @@
 A CPU-only, single-container voice agent. Talk to it hands-free through a
 browser: it listens (Silero VAD), transcribes (faster-whisper small int8),
 answers with a small hand-rolled agent pointed at your llama.cpp v1 endpoint
-(shell, file and web tools, persistent conversation memory), and speaks back
-(kokoro-onnx 82M). No GPU, no API keys, one Docker container.
+(shell, file and web tools, named conversation sessions), and speaks back in a
+cloned voice (LuxTTS voice cloning). No GPU, no API keys, one Docker container.
 
 ```
 Browser (mic + playback + wobbly dot UI)
-   │  WebSocket (PCM 16 kHz up, PCM 24 kHz down)
+   │  WebSocket (PCM 16 kHz up, PCM 48 kHz down)
    ▼
 FastAPI (uvicorn)
    ├── VAD: Silero v6 → speech endpointing
@@ -16,15 +16,15 @@ FastAPI (uvicorn)
     ├── Agent: streaming tool loop → llama.cpp v1 (thinking on)
     │     ├── 8 tools: exec, files, web, time, weather
     │     └── spoken fillers ("one moment…") while reasoning
-   ├── Memory: persistent turns, idle-time LLM compaction
-   └── TTS: kokoro-onnx 82M, sentence-chunked streaming
+    ├── Memory: named conversation sessions, idle-time LLM compaction
+   └── TTS: LuxTTS voice cloning (48 kHz), sentence-chunked streaming
 ```
 
 ## Prerequisites
 
 - Docker + Compose.
 - A CPU with ≥8 cores recommended. Benchmarks on a 24-core host: STT
-  4.6× realtime, TTS ~1× realtime (see `NOTES.md` for the full numbers).
+  4.6× realtime, TTS ~0.2× realtime (see `NOTES.md` for the full numbers).
 - A **running llama.cpp server** with an OpenAI-compatible `/v1` endpoint:
   - tool calling enabled (`--tools all`),
   - a Qwen3-style chat model whose template honours
@@ -33,7 +33,8 @@ FastAPI (uvicorn)
     stream first (surfaced as `reasoning`/`reasoning_content`, never spoken
     or stored) and vivo speaks short filler phrases during the silence — see
     [Thinking & fillers](#thinking--fillers).
-- ~600 MB free disk for models (auto-downloaded on first run).
+- ~2.5 GB free disk for models (auto-downloaded on first run; the LuxTTS
+  voice model is the bulk of it).
 - The UI opened from a **secure context** (HTTPS or `localhost`) or the
   browser mic won't work — see [Microphone & HTTPS](#microphone--https).
 
@@ -73,9 +74,10 @@ FastAPI (uvicorn)
    docker compose up -d --build
    ```
 
-   First run downloads kokoro (~140 MB) at startup and faster-whisper small
-   (~460 MB) lazily on the first transcription. Model downloads are
-   idempotent — `docker compose down && up` never re-downloads.
+    First run downloads the LuxTTS voice model (~1.2 GB) and whisper-tiny
+    (~150 MB) into the HF cache at startup, and faster-whisper small
+    (~460 MB) lazily on the first transcription. Model downloads are
+    idempotent — `docker compose down && up` never re-downloads.
 
 5. Open **http://localhost:8600**, press start, and talk.
 
@@ -85,7 +87,8 @@ Useful endpoints:
 |------|-------|
 | UI | http://localhost:8600 |
 | Health (reports LLM URL/model) | http://localhost:8600/health |
-| Voice WebSocket | `ws://<host>:8600/ws` |
+| Voice WebSocket | `ws://<host>:8600/ws[?session=<id>]` |
+| Conversation sessions (list / create / activate / delete) | `http://localhost:8600/api/sessions` |
 | Logs | `docker compose logs -f vivo` |
 
 ## Configuration
@@ -101,11 +104,17 @@ through to the file.
 The **settings** button in the UI footer opens a modal rendered entirely from
 the server's schema (`GET /api/config`), so it always matches what the code
 understands. Controls are typed: sliders for numerics (with a live value
-readout), dropdowns for enums and the kokoro voice list (fetched from the
-loaded model, `Kokoro.get_voices()`), checkboxes, and textareas for the filler
+readout), dropdowns for enums, checkboxes, and textareas for the filler
 phrases and prompts. Each row carries a `(?)` tooltip and an **apply** badge —
 `live` (takes effect immediately, even mid-reply), `next session` (next
 utterance/connection), or `restart` (needs a container restart).
+
+The **voice** row is special: voices are reference clips, so it pairs the
+dropdown with **upload** (pick an audio file), **record** (capture 3–30 s from
+the mic), **preview** (play the selected clip), and **delete**. An upload is
+decoded to 16-bit mono WAV in the browser, stored under `data/voices/`, made
+the active voice, and cloned in the background so the first reply in the new
+voice is already warm.
 
 **Save** POSTs the whole snapshot to `POST /api/config`. The server validates
 it against the schema (a `400` lists every problem), rewrites `vivo.toml` on
@@ -137,9 +146,9 @@ interval_s = 8.0                                     # THINK_FILLER_INTERVAL
 phrases = ["Let me think about that.", …]            # THINK_FILLER_PHRASES (comma-separated)
 
 [voice]
-tts_voice = "af_heart"          # TTS_VOICE — kokoro voice (see voices-v1.0.bin)
+tts_voice = "default"           # TTS_VOICE — reference clip name in <data>/voices
 tts_speed = 1.0                 # TTS_SPEED
-sentence_pause_s = 0.2          # TTS_SENTENCE_PAUSE
+sentence_pause_s = 0.25         # TTS_SENTENCE_PAUSE — silence appended after each sentence
 sentence_max_chars = 90         # SENTENCE_MAX_CHARS — hard split without punctuation
 clause_max_chars = 40           # CLAUSE_MAX_CHARS — clause split for early TTS start (0 = off)
 tts_queue_size = 2              # TTS_QUEUE_SIZE — LLM→TTS sentence queue bound
@@ -179,7 +188,10 @@ fetch_max_chars = 6000          # FETCH_MAX_CHARS (hard max 16000)
 
 Deployment paths stay env-only in `docker-compose.yml` (container-internal):
 `MODEL_DIR=/models`, `DATA_DIR=/data`, `WORK_DIR=/workspace` (the sandbox
-root for `exec` cwd and the file tools), plus the port mapping.
+root for `exec` cwd and the file tools), `HF_HOME=/models/hf` (the Hugging
+Face cache the LuxTTS + whisper-tiny weights land in), plus the port mapping.
+`TTS_CPU_THREADS` (default 8) is the one deployment-only tuning knob: the
+Omp threads LuxTTS uses for CPU inference.
 
 ## The agent
 
@@ -200,28 +212,51 @@ The system prompt enforces voice UX: summarise results in plain words (never
 read raw output aloud), say what it's doing before a slow tool, retry a
 failed tool once.
 
-**Conversation memory.** Turn history persists across restarts in
-`./data/conversation.json` (atomic writes; corrupt file ⇒ fresh start). When
-history exceeds `COMPACT_AFTER_CHARS` and more than `KEEP_RECENT_TURNS`
-turns exist, a **background** thread asks the LLM to summarise the older
-turns into one checkpoint message — it never blocks an utterance, and a
-checkpoint is only applied if nothing was appended meanwhile. Delete
-`./data/conversation.json` to reset memory.
+**Conversation memory — named sessions.** Every conversation is a
+*session*: its turn history persists in `./data/sessions/<id>.json` (atomic
+writes; corrupt file ⇒ fresh start), indexed by `./data/sessions.json` (one
+session is *active*; ids are `YYYYMMDD-HHMMSS` creation timestamps). In the
+UI, the footer **dropdown** switches sessions and **new** starts a fresh
+one; each browser tab remembers its session (`localStorage`) and connects
+with `/ws?session=<id>`, while a plain connection follows the active one.
+The same operations exist as REST: `GET /api/sessions`, `POST /api/sessions`,
+`POST /api/sessions/{id}/activate`, `DELETE /api/sessions/{id}` (deleting
+the last session creates a fresh active one). Within a session, when history
+exceeds `COMPACT_AFTER_CHARS` and more than `KEEP_RECENT_TURNS` turns exist,
+a **background** thread asks the LLM to summarise the older turns into one
+checkpoint message — it never blocks an utterance, and a checkpoint is only
+applied if nothing was appended meanwhile. A pre-sessions
+`./data/conversation.json` is migrated automatically on first start.
 
 ## Voice pipeline
 
 The browser talks to a WebSocket at `ws://<host>:8600/ws`. Per utterance the
 server runs: mic PCM (16 kHz) → Silero VAD endpointing → faster-whisper STT
-→ agent (llama.cpp, streaming, tools) → sentence chunker → kokoro TTS.
+→ agent (llama.cpp, streaming, tools) → sentence chunker → LuxTTS TTS.
+
+**Voice cloning.** The TTS engine is LuxTTS (zipvoice), which speaks in a
+cloned voice: each named voice is a 3–30 s reference clip stored as
+`data/voices/<name>.wav`. The clip is transcribed (whisper-tiny) and
+feature-extracted once, on first use or upload (~1 s), and every synthesis
+after that is a flow-matching generate at ~0.2× realtime on CPU, outputting
+48 kHz PCM. A `default` clip ships in the repo and is seeded into
+`data/voices/` on first run; add your own from the settings pane (upload or
+mic record).
 
 - Client sends mic audio as **binary int16 mono 16 kHz** frames (any size).
-- Server streams back JSON events (`start`, `end`, `transcript`,
-  `agent_text` deltas, `tool`, `reply_done`) plus **binary int16 mono
-  24 kHz** TTS audio, one chunk per sentence — first audio starts while the
-  rest of the reply is still being generated.
+- Server streams back JSON events (`session` [first frame — the conversation
+  this connection is bound to], `config`, `start`, `end`, `transcript`,
+   `agent_text` deltas, `tool`, `reply_done`) plus **binary int16 mono
+   48 kHz** TTS audio, one chunk per sentence — first audio starts while the
+  rest of the reply is still being generated. Connect with `/ws?session=<id>`
+  to bind a specific conversation; `/ws` follows the active one.
 - `{"type":"barge_in"}` interrupts the active reply (stops speaking, aborts
   the LLM stream) and frees the mic immediately; a generation token ensures
-  the interrupted worker can never send stale audio. While a reply is
+  the interrupted worker can never send stale audio. `{"type":"session"}`
+  starts a new conversation and `{"type":"session","id":…}` switches to an
+  existing one (both also set it active, for other tabs); each is answered
+  with a `session` frame (unknown id → `error`). A switch affects the next
+  utterance only — an in-flight reply keeps the conversation it started in. While a reply is
   playing, mic input is ignored (echo guard) — except for **auto barge-in**:
   the browser watches the mic level and sends `barge_in` on its own when your
   voice (after the browser's echo cancellation) stays above a threshold long
@@ -274,19 +309,19 @@ app/
   main.py         FastAPI app: /health, /ws, static UI, model pre-fetch
   pipeline.py     per-connection voice pipeline + WS protocol (docstring)
   vad.py          streaming Silero v6 (onnx, bundled in faster-whisper)
-  stt.py          faster-whisper small int8 wrapper
-  tts.py          kokoro-onnx 82M wrapper, per-sentence streaming
-  agent.py        hand-rolled streaming tool loop against llama.cpp v1
-  conversation.py persistent turn history + idle-time LLM compaction
-  tools.py        get_time, weather, read/write/list file tools
-  shell.py        sandboxed exec (deny patterns, tree kill, truncation)
-  web.py          web_search (ddgs) + web_fetch (Jina reader)
-  models.py       idempotent model download
+   stt.py          faster-whisper small int8 wrapper
+   tts.py          LuxTTS voice-cloning wrapper, per-sentence streaming (48 kHz)
+   agent.py        hand-rolled streaming tool loop against llama.cpp v1
+   conversation.py named conversation sessions + idle-time LLM compaction
+   tools.py        get_time, weather, read/write/list file tools
+   shell.py        sandboxed exec (deny patterns, tree kill, truncation)
+   web.py          web_search (ddgs) + web_fetch (Jina reader)
+   models.py       model pre-fetch (HF repos) + default-voice seed
   config.py       vivo.toml + env-var loader (env > file > default)
   config_schema.py  typed schema: pane, validation, file comments, write-back
 static/           browser UI: wobbly canvas dot, mic capture, playback, sidebar, settings pane
 vivo.toml         central configuration (rewritten by the settings pane, env-overridable)
-tests/            unit + live WS pipeline tests (95)
+tests/            unit + live WS pipeline tests (131)
 ```
 
 ## Tests
@@ -302,7 +337,7 @@ docker compose run --rm -w /app -e WS_URL=ws://vivo:8000/ws \
 
 Most tests run offline (fake LLM/TTS where needed); the agent, pipeline and
 compaction tests call the **live llama.cpp server**, so it must be up and
-reachable from the containers. The full suite is ~46 s (up to ~65 s under
+reachable from the containers. The full suite is ~83 s (up to ~105 s under
 LLM contention). VAD/STT tests use a
 real TTS speech fixture — synthetic tones do not reliably trigger Silero v6
 (see `NOTES.md`).
@@ -312,17 +347,20 @@ real TTS speech fixture — synthetic tones do not reliably trigger Silero v6
 - **Stop / start**: `docker compose down` / `docker compose up -d`
   (models and conversation history survive — they live on the `./models`
   and `./data` volumes).
-- **Reset conversation memory**: `rm data/conversation.json` (or `docker
-  compose exec vivo rm /data/conversation.json`).
+- **Reset a conversation**: `DELETE /api/sessions/<id>` removes its file and
+  index entry (deleting the last session creates a fresh active one). Wipe
+  everything: `rm -r data/sessions data/sessions.json` — a fresh active
+  session is created on next start.
 - **Rebuild after UI edits**: `static/` is baked into the image, so
   `docker compose build && up -d --force-recreate`.
 
 ## Documentation
 
 - `SPEC.md` — requirements, architecture, acceptance criteria
-- `TASKS.md` — build tasks T001–T015 (all done) with verification evidence
-- `DECISIONS.md` — D001–D012: design log (why faster-whisper/kokoro,
+- `TASKS.md` — build tasks T001–T022 (all done) with verification evidence
+- `DECISIONS.md` — D001–D018: design log (why faster-whisper/LuxTTS,
   hand-rolled agent, barge-in generation token, memory compaction, sandbox,
-  thinking mode + spoken fillers)
+  thinking mode + spoken fillers, named conversation sessions, LuxTTS voice
+  cloning)
 - `STATUS.md` — current state, resume notes, known gotchas
 - `NOTES.md` — benchmarks and debugging discoveries

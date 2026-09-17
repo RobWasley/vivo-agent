@@ -95,7 +95,7 @@ async def _utterance_reply(pcm16: np.ndarray) -> None:
         assert len(hit) >= 5, f"transcript was: {transcript!r}"
         assert any(ftype(f) == "agent_text" for f in frames), "no agent text streamed"
         audio = b"".join(f for f in frames if isinstance(f, (bytes, bytearray)))
-        assert len(audio) > 2 * 24000, f"only {len(audio) // 2} TTS samples"
+        assert len(audio) > 2 * 48000, f"only {len(audio) // 2} TTS samples"
 
 
 async def _barge_in(pcm16: np.ndarray) -> None:

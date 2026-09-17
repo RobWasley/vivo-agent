@@ -22,6 +22,7 @@ import numpy as np
 
 from app import config
 from app.agent import ReasoningDelta
+from app.conversation import SessionStore
 from app.pipeline import Bench, FILLER_PHRASES, ThinkingFiller, VoiceSession
 
 
@@ -59,7 +60,7 @@ class FakeTTS:
         with self._lock:
             self.calls.append(text)
         time.sleep(self.delay)
-        return np.zeros(int(0.05 * 24000), dtype=np.float32)
+        return np.zeros(int(0.05 * 48000), dtype=np.float32)
 
 
 class ThinkingAgent:
@@ -85,28 +86,15 @@ class ThinkingAgent:
         pass
 
 
-class FakeConversation:
-    def __init__(self) -> None:
-        self.turns: list[tuple[str, str]] = []
-
-    def messages(self) -> list[dict]:
-        return []
-
-    def add_turn(self, user: str, answer: str) -> None:
-        self.turns.append((user, answer))
-
-    def maybe_compact(self, summarize) -> None:
-        pass
-
-
 def make_engines(agent: ThinkingAgent, tts: FakeTTS):
-    conv = FakeConversation()
+    sessions = SessionStore()  # in-memory: no data_dir
+    conv = sessions.conversation_for(sessions.active_id)
     return (
         SimpleNamespace(
             stt=SimpleNamespace(transcribe=lambda samples: "hello there"),
             tts=tts,
             agent=agent,
-            conversation=conv,
+            sessions=sessions,
         ),
         conv,
     )

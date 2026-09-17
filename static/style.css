@@ -150,6 +150,15 @@ button.primary.active { background: linear-gradient(180deg, #f87171, #dc2626); b
 button.ghost { background: transparent; }
 button.ghost:hover { background: rgba(255, 255, 255, 0.04); }
 
+.session-select {
+  font: inherit; font-size: 0.85rem; color: var(--text);
+  background: var(--panel-2); border: 1px solid var(--line);
+  border-radius: 10px; padding: 8px 10px; max-width: 190px; cursor: pointer;
+}
+.session-select:hover { background: #262633; }
+.session-select:disabled { opacity: 0.45; cursor: not-allowed; }
+.session-select option { background: var(--panel); }
+
 .hint { margin-left: auto; font-size: 0.8rem; color: var(--muted); }
 
 /* ---------- settings pane ---------- */
@@ -240,6 +249,12 @@ button.ghost:hover { background: rgba(255, 255, 255, 0.04); }
   font-size: 0.8rem; color: var(--muted); min-width: 46px; text-align: right;
   font-variant-numeric: tabular-nums;
 }
+.svoice { display: flex; flex-direction: column; gap: 6px; flex: 1; min-width: 0; }
+.svoice select { flex: none; width: 100%; }
+.svoice-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+button.ghost.tiny { padding: 2px 8px; font-size: 0.78rem; }
+.svoice-status { font-size: 0.78rem; color: var(--muted); min-height: 1em; }
+.svoice-status.err { color: var(--err); }
 
 @media (max-width: 820px) {
   main { grid-template-columns: 1fr; grid-template-rows: 1fr 200px; }

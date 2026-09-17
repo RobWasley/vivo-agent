@@ -1,14 +1,15 @@
-/* vivo UI: mic -> WS (16 kHz int16 PCM) ; WS TTS (24 kHz int16 PCM) -> speaker.
+/* vivo UI: mic -> WS (16 kHz int16 PCM) ; WS TTS (48 kHz int16 PCM) -> speaker.
  *
  * Protocol (see app/pipeline.py):
- *   client -> server : binary 16 kHz int16 mono PCM, {"type":"barge_in"|"flush"|"ping"}
- *   server -> client : JSON start|end|transcript|agent_text|tool|barge_ack|reply_done|error
- *                      + binary 24 kHz int16 mono TTS chunks (one per sentence)
+ *   client -> server : binary 16 kHz int16 PCM,
+ *                      {"type":"barge_in"|"flush"|"ping"|{"type":"session"[,"id":str]}}
+ *   server -> client : JSON start|end|transcript|agent_text|tool|barge_ack|reply_done|error|session
+ *                      + binary 48 kHz int16 mono TTS chunks (one per sentence)
  */
 "use strict";
 
 const TARGET_MIC_RATE = 16000;
-const TARGET_PLAY_RATE = 24000;
+const TARGET_PLAY_RATE = 48000;
 
 /* Auto barge-in: while vivo is speaking, sustained mic level above the
  * threshold (your voice, after the browser's echo cancellation) interrupts
@@ -33,6 +34,8 @@ const el = {
   btnBarage: $("btn-barage"),
   btnFlush: $("btn-flush"),
   btnClear: $("btn-clear"),
+  sessionSelect: $("session-select"),
+  btnNewSession: $("btn-new-session"),
   btnSettings: $("btn-settings"),
   settingsDlg: $("settings"),
   settingsBody: $("settings-body"),
@@ -46,6 +49,7 @@ const el = {
 const S = {
   ws: null,
   wsState: "connecting", // connecting | open | closed
+  sessionId: null, // conversation bound to this tab (localStorage "vivo.session")
   pipeline: "idle", // idle | listening | thinking | speaking
   mic: null, // { stream, ctx, source, proc, rate }
   micActive: false,
@@ -61,11 +65,19 @@ const S = {
   dropAudio: false, // ignore in-flight TTS frames after a barge until the next `end`
 };
 
+try { S.sessionId = localStorage.getItem("vivo.session"); } catch (_) { S.sessionId = null; }
+
+function rememberSession(id) {
+  S.sessionId = id;
+  try { localStorage.setItem("vivo.session", id); } catch (_) {}
+}
+
 /* ---------------- websocket ---------------- */
 
 function connectWS() {
   setWsState("connecting");
-  const url = `${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws`;
+  const base = `${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws`;
+  const url = S.sessionId ? `${base}?session=${encodeURIComponent(S.sessionId)}` : base;
   const ws = new WebSocket(url);
   ws.binaryType = "arraybuffer";
   let wasOpen = false;
@@ -331,6 +343,16 @@ function handleServerJson(m) {
       addEntry("error", m.message);
       setPipeline("idle");
       break;
+    case "session":
+      // handshake + result of new/switch commands — the server's word on which
+      // conversation this tab is bound to
+      rememberSession(m.id);
+      el.sessionSelect.disabled = false;
+      const known = [...el.sessionSelect.options].some((o) => o.value === m.id);
+      if (!known) loadSessions();
+      else el.sessionSelect.value = m.id;
+      if (m.created) addEntry("hint", "&mdash; new conversation &mdash;");
+      return; // never touches the status UI
     case "pong":
       break;
   }
@@ -366,6 +388,45 @@ function scrollTranscript() {
 
 function escapeHtml(s) {
   return s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
+
+/* ---------------- sessions (T021) ----------------
+ * Each tab binds to one named conversation (by default the server's active
+ * one) and remembers it in localStorage. "new" starts a fresh conversation,
+ * the dropdown switches; both go over WS so every tab agrees (the server
+ * answers each command with a `session` frame).
+ */
+
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+function formatSessionId(id) {
+  const m = /^(\d{4})(\d{2})(\d{2})-(\d{2})(\d{2})(-.*)?$/.exec(id);
+  if (!m) return id;
+  const label = `${MONTHS[Number(m[2]) - 1]} ${m[3]} ${m[4]}:${m[5]}`;
+  return m[6] ? `${label}${m[6]}` : label;
+}
+
+async function loadSessions() {
+  let j;
+  try {
+    const res = await fetch("/api/sessions");
+    if (!res.ok) return;
+    j = await res.json();
+  } catch (_) {
+    return; // server unreachable — the WS handshake will still bind us
+  }
+  const sel = el.sessionSelect;
+  sel.innerHTML = "";
+  for (const s of j.sessions) {
+    const opt = document.createElement("option");
+    opt.value = s.id;
+    opt.textContent = formatSessionId(s.id) + (s.active ? " (active)" : "");
+    sel.appendChild(opt);
+  }
+  const known = S.sessionId && [...sel.options].some((o) => o.value === S.sessionId);
+  if (!known) S.sessionId = j.active; // remembered session vanished: follow the server
+  if (S.sessionId) sel.value = S.sessionId;
+  sel.disabled = false;
 }
 
 /* ---------------- status ---------------- */
@@ -604,9 +665,9 @@ function buildControl(k, value) {
     box.checked = !!value;
     return box;
   }
-  if (k.type === "choices" || k.type === "voices") {
+  if (k.type === "choices") {
     const sel = document.createElement("select");
-    const opts = k.type === "voices" ? [...settings.voices] : [...k.choices];
+    const opts = [...k.choices];
     if (!opts.includes(value)) opts.unshift(value);
     for (const o of opts) {
       const opt = document.createElement("option");
@@ -617,6 +678,7 @@ function buildControl(k, value) {
     }
     return sel;
   }
+  if (k.type === "voices") return buildVoiceControl(value);
   if (k.type === "textarea" || k.type === "str[]") {
     const ta = document.createElement("textarea");
     ta.rows = k.type === "str[]" ? 4 : 2;
@@ -629,8 +691,195 @@ function buildControl(k, value) {
   return inp;
 }
 
+/* Voice-clone controls (T022): the selected reference clip + actions to add
+ * (upload a file / record from the mic), preview, and delete voices. Uploads
+ * and recordings are re-encoded to 16-bit mono WAV in the browser so the
+ * server always receives one format. */
+function buildVoiceControl(value) {
+  const wrap = document.createElement("div");
+  wrap.className = "svoice";
+  const sel = document.createElement("select");
+  const opts = [...settings.voices];
+  if (!opts.includes(value)) opts.unshift(value);
+  for (const o of opts) {
+    const opt = document.createElement("option");
+    opt.value = o;
+    opt.textContent = o;
+    if (o === value) opt.selected = true;
+    sel.appendChild(opt);
+  }
+  wrap.appendChild(sel);
+
+  const status = document.createElement("span");
+  status.className = "svoice-status";
+  wrap.appendChild(status);
+  const setStatus = (text, isErr) => {
+    status.textContent = text || "";
+    status.className = "svoice-status" + (isErr ? " err" : "");
+  };
+
+  const actions = document.createElement("div");
+  actions.className = "svoice-actions";
+  const mkBtn = (label, title) => {
+    const b = document.createElement("button");
+    b.className = "ghost tiny";
+    b.textContent = label;
+    b.title = title;
+    actions.appendChild(b);
+    return b;
+  };
+  const file = document.createElement("input");
+  file.type = "file";
+  file.accept = "audio/*";
+  file.hidden = true;
+  file.addEventListener("change", () => {
+    const f = file.files[0];
+    if (f) uploadVoice(f, f.name.replace(/\.[^.]+$/, ""));
+    file.value = "";
+  });
+  const bUpload = mkBtn("upload", "Add a voice: choose an audio file (3-30 s of clear speech)");
+  bUpload.addEventListener("click", () => file.click());
+  const bRecord = mkBtn("record", "Add a voice: record from the microphone (speak for 3-30 s)");
+  bRecord.addEventListener("click", () => toggleVoiceRecord(bRecord, setStatus));
+  const bPreview = mkBtn("preview", "Play the selected reference clip");
+  bPreview.addEventListener("click", () => previewVoice(sel.value, setStatus));
+  const bDelete = mkBtn("delete", "Delete the selected reference clip");
+  bDelete.addEventListener("click", () => deleteVoice(sel.value));
+  wrap.appendChild(actions);
+  return wrap;
+}
+
+let voiceRec = null; // { rec, stream, chunks, btn, status, setStatus, t0 }
+
+async function toggleVoiceRecord(btn, setStatus) {
+  if (voiceRec) {
+    voiceRec.rec.stop();
+    return;
+  }
+  let stream;
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+  } catch (err) {
+    setStatus(`microphone: ${err.message || err}`, true);
+    return;
+  }
+  const rec = new MediaRecorder(stream);
+  const chunks = [];
+  rec.ondataavailable = (e) => {
+    if (e.data.size) chunks.push(e.data);
+  };
+  const t0 = Date.now();
+  voiceRec = { rec, stream, chunks, btn, setStatus, t0 };
+  rec.onstop = () => {
+    const v = voiceRec;
+    voiceRec = null;
+    v.btn.textContent = "record";
+    v.stream.getTracks().forEach((t) => t.stop());
+    const secs = (Date.now() - v.t0) / 1000;
+    if (secs < 3) {
+      v.setStatus(`recording was ${secs.toFixed(1)}s — speak for 3-30 s`, true);
+      return;
+    }
+    const blob = new Blob(chunks, { type: rec.mimeType || "audio/webm" });
+    toWavBlob(blob)
+      .then((wav) => uploadVoice(wav, "recorded"))
+      .catch((err) => v.setStatus(`could not decode recording: ${err.message}`, true));
+  };
+  rec.start(250);
+  btn.textContent = "stop";
+  setStatus("recording… speak clearly, then stop");
+}
+
+async function toWavBlob(blob) {
+  const buf = await blob.arrayBuffer();
+  const Ctx = window.AudioContext || window.webkitAudioContext;
+  const ctx = new Ctx();
+  let audio;
+  try {
+    audio = await ctx.decodeAudioData(buf);
+  } finally {
+    ctx.close();
+  }
+  const chs = [];
+  for (let c = 0; c < audio.numberOfChannels; c++) chs.push(audio.getChannelData(c));
+  const n = audio.length;
+  const mono = new Float32Array(n);
+  for (let i = 0; i < n; i++) {
+    let s = 0;
+    for (const ch of chs) s += ch[i];
+    mono[i] = s / chs.length;
+  }
+  return encodeWav(mono, audio.sampleRate);
+}
+
+function encodeWav(f32, sr) {
+  const n = f32.length;
+  const buf = new ArrayBuffer(44 + n * 2);
+  const v = new DataView(buf);
+  const ws = (o, s) => {
+    for (let i = 0; i < s.length; i++) v.setUint8(o + i, s.charCodeAt(i));
+  };
+  ws(0, "RIFF");
+  v.setUint32(4, 36 + n * 2, true);
+  ws(8, "WAVE");
+  ws(12, "fmt ");
+  v.setUint32(16, 16, true);
+  v.setUint16(20, 1, true);
+  v.setUint16(22, 1, true);
+  v.setUint32(24, sr, true);
+  v.setUint32(28, sr * 2, true);
+  v.setUint16(32, 2, true);
+  v.setUint16(34, 16, true);
+  ws(36, "data");
+  v.setUint32(40, n * 2, true);
+  let o = 44;
+  for (let i = 0; i < n; i++) {
+    const s = Math.max(-1, Math.min(1, f32[i]));
+    v.setInt16(o, s < 0 ? s * 0x8000 : s * 0x7fff, true);
+    o += 2;
+  }
+  return new Blob([buf], { type: "audio/wav" });
+}
+
+async function uploadVoice(blob, name) {
+  flashSettingsMsg(`saving voice "${name || "voice"}"…`);
+  try {
+    const wav = await toWavBlob(blob);
+    const fd = new FormData();
+    fd.append("file", wav, `${name || "voice"}.wav`);
+    fd.append("name", name || "voice");
+    const res = await fetch("/api/voice", { method: "POST", body: fd });
+    const j = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(j.detail || `HTTP ${res.status}`);
+    flashSettingsMsg(`voice "${j.voice}" saved — cloning in the background`);
+    openSettings(); // re-render: the voice list + active voice changed
+  } catch (err) {
+    flashSettingsMsg(`voice upload failed: ${err.message}`, true);
+  }
+}
+
+function previewVoice(name, setStatus) {
+  if (!name) return;
+  new Audio(`/api/voices/${encodeURIComponent(name)}`).play().catch((e) => {
+    (setStatus || flashSettingsMsg)(`preview: ${e.message}`, true);
+  });
+}
+
+async function deleteVoice(name) {
+  if (!name || !confirm(`delete voice "${name}"?`)) return;
+  const res = await fetch(`/api/voices/${encodeURIComponent(name)}`, { method: "DELETE" });
+  const j = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    flashSettingsMsg(j.detail || `HTTP ${res.status}`, true);
+    return;
+  }
+  flashSettingsMsg(`voice "${name}" deleted`);
+  openSettings();
+}
+
 function readSettingRow(row) {
   const t = row.dataset.type;
+  if (t === "voices") return row.querySelector("select").value;
   const c = row.querySelector("input, select, textarea");
   if (t === "int") return Math.round(Number(c.value));
   if (t === "float") return Number(c.value);
@@ -691,6 +940,12 @@ el.btnClear.addEventListener("click", () => {
   S.currentVivoEntry = null;
 });
 
+el.btnNewSession.addEventListener("click", () => sendJson({ type: "session" }));
+
+el.sessionSelect.addEventListener("change", () => {
+  if (el.sessionSelect.value) sendJson({ type: "session", id: el.sessionSelect.value });
+});
+
 el.btnSettings.addEventListener("click", openSettings);
 el.btnSettingsSave.addEventListener("click", saveSettings);
 const closeSettings = () => el.settingsDlg.close();
@@ -703,7 +958,7 @@ el.settingsDlg.addEventListener("click", (ev) => {
 window.addEventListener("resize", resizeCanvas);
 window.addEventListener("load", () => {
   resizeCanvas();
-  connectWS();
+  loadSessions().then(connectWS); // bind a session before opening the socket
   requestAnimationFrame(frame);
   if (!window.isSecureContext || !navigator.mediaDevices) {
     el.btnStart.disabled = true;

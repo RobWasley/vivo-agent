@@ -1,9 +1,13 @@
 """Settings-pane API tests (T019): schema/validation/writer, /api/config, hot-apply, broadcast."""
 import asyncio
+import io
 import json
+import math
+import struct
 import threading
 import time
 import tomllib
+import wave
 from pathlib import Path
 
 import pytest
@@ -11,6 +15,7 @@ from fastapi import FastAPI, Request
 from fastapi.testclient import TestClient
 
 from app import config, config_schema, main, pipeline
+from app.conversation import SessionStore
 
 ROOT = Path(__file__).resolve().parent.parent
 SECTIONS = ["llm", "persona", "filler", "voice", "stt", "vad", "barge_in", "memory", "agent"]
@@ -91,7 +96,7 @@ def test_write_config_roundtrip(api_env):
     text = api_env.read_text()
     assert "# vivo settings (T018)." in text
     assert "# Language model" in text  # section title from the schema
-    assert "# Kokoro voice used for all speech." in text  # per-key help from the schema
+    assert "# The voice vivo speaks with" in text  # per-key help from the schema
 
 
 def test_write_config_escapes_special_chars(api_env):
@@ -131,7 +136,7 @@ class _FakeEngines:
         self.tts = type("T", (), {"voice": "af_heart", "speed": 1.0, "sentence_pause": 0.2})()
         self.tts.voices = lambda: ["af_heart", "am_michael"]
         self.stt = type("S", (), {"language": "en", "beam_size": 1})()
-        self.conversation = type("C", (), {"compact_after_chars": 12000, "keep_recent_turns": 4})()
+        self.sessions = SessionStore()  # in-memory: no data_dir
 
 
 def _offline_app():
@@ -238,19 +243,58 @@ async def _make_session(ws, engines):
 
 # ---------------- live (real engines) ----------------
 
+def _sine_wav(secs: float = 3.2, sr: int = 24000, hz: float = 440.0) -> bytes:
+    """A decodable mono 16-bit WAV long enough to pass the 3-30 s check."""
+    n = int(secs * sr)
+    frames = b"".join(
+        struct.pack("<h", int(0.2 * 32767 * math.sin(2 * math.pi * hz * i / sr))) for i in range(n)
+    )
+    bio = io.BytesIO()
+    with wave.open(bio, "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(sr)
+        w.writeframes(frames)
+    return bio.getvalue()
+
+
 def test_api_config_live(api_env):
     with TestClient(main.app) as c:
         assert c.get("/health").status_code == 200
         j = c.get("/api/config").json()
         assert set(j["schema"]) == set(SECTIONS)
-        assert "af_heart" in j["voices"]
+        assert "default" in j["voices"]
         assert j["values"]["stt"]["model"] == "small"
 
-        other = [v for v in j["voices"] if v != "af_heart"][0]
-        r = c.post("/api/config", json={"values": {"voice": {"tts_voice": other}}})
+        # upload a reference clip -> new voice, made active + persisted (T022)
+        r = c.post(
+            "/api/voice",
+            files={"file": ("probe.wav", _sine_wav(), "audio/wav")},
+            data={"name": "probe"},
+        )
         assert r.status_code == 200, r.text
-        assert config.TTS_VOICE == other
-        assert f'tts_voice = "{other}"' in api_env.read_text()
+        slug = r.json()["voice"]
+        assert slug == "probe"
+        assert config.TTS_VOICE == slug
+        assert f'tts_voice = "{slug}"' in api_env.read_text()
+        j2 = c.get("/api/config").json()
+        assert slug in j2["voices"]
+        assert j2["values"]["voice"]["tts_voice"] == slug
+
+        # preview serves the stored clip
+        clip = c.get(f"/api/voices/{slug}")
+        assert clip.status_code == 200
+        assert clip.headers["content-type"].startswith("audio/wav")
+
+        # the active voice is protected from deletion
+        assert c.delete(f"/api/voices/{slug}").status_code == 409
+
+        # switch back to the default, then the probe clip can be deleted
+        r2 = c.post("/api/config", json={"values": {"voice": {"tts_voice": "default"}}})
+        assert r2.status_code == 200, r2.text
+        assert config.TTS_VOICE == "default"
+        assert c.delete(f"/api/voices/{slug}").status_code == 200
+        assert slug not in c.get("/api/config").json()["voices"]
 
         bad = c.post("/api/config", json={"values": {"vad": {"threshold": 0.0}}})
         assert bad.status_code == 400

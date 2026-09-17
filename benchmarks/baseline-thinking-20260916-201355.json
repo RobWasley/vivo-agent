@@ -1,0 +1,105 @@
+{
+  "ts": "2026-09-16T20:13:55",
+  "host_llm": "llama.cpp (see nvidia-smi in report for VRAM)",
+  "modes": [
+    {
+      "mode": "reply",
+      "fixture": "tests/fixtures/stt_sample.wav",
+      "barge": false,
+      "url": "ws://127.0.0.1:8600/ws",
+      "container": "vivo",
+      "client": [
+        {
+          "audio_bytes": 0,
+          "audio_frames": 0,
+          "audio_secs": 0.0,
+          "wall": {
+            "mic_done": 1789589635.172
+          }
+        },
+        {
+          "audio_bytes": 0,
+          "audio_frames": 0,
+          "audio_secs": 0.0,
+          "wall": {
+            "mic_done": 1789589878.195
+          }
+        }
+      ],
+      "server": [
+        [],
+        []
+      ],
+      "resources": [
+        {},
+        {}
+      ]
+    },
+    {
+      "mode": "long",
+      "fixture": "tests/fixtures/prompt_long.wav",
+      "barge": false,
+      "url": "ws://127.0.0.1:8600/ws",
+      "container": "vivo",
+      "client": [
+        {
+          "audio_bytes": 0,
+          "audio_frames": 0,
+          "audio_secs": 0.0,
+          "wall": {
+            "mic_done": 1789590121.222
+          }
+        },
+        {
+          "audio_bytes": 0,
+          "audio_frames": 0,
+          "audio_secs": 0.0,
+          "wall": {
+            "mic_done": 1789590364.247
+          }
+        }
+      ],
+      "server": [
+        [],
+        []
+      ],
+      "resources": [
+        {},
+        {}
+      ]
+    },
+    {
+      "mode": "barge",
+      "fixture": "tests/fixtures/prompt_long.wav",
+      "barge": true,
+      "url": "ws://127.0.0.1:8600/ws",
+      "container": "vivo",
+      "client": [
+        {
+          "audio_bytes": 0,
+          "audio_frames": 0,
+          "audio_secs": 0.0,
+          "wall": {
+            "mic_done": 1789590607.272
+          }
+        },
+        {
+          "audio_bytes": 0,
+          "audio_frames": 0,
+          "audio_secs": 0.0,
+          "wall": {
+            "mic_done": 1789590865.635
+          }
+        }
+      ],
+      "server": [
+        [],
+        []
+      ],
+      "resources": [
+        {},
+        {}
+      ]
+    }
+  ]
+}

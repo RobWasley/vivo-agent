@@ -114,15 +114,17 @@ SCHEMA = {
         "keys": {
             "tts_voice": {
                 "type": "voices",
-                "label": "Voice",
-                "help": "Kokoro voice used for all speech.",
+                "label": "Voice (clone)",
+                "help": "The voice vivo speaks with: a reference clip (3-30 s of clear speech) "
+                        "that is cloned. Upload or record one below.",
                 "apply": "now",
                 "attr": "TTS_VOICE",
             },
             "tts_speed": {
                 "type": "float",
                 "label": "Speed",
-                "help": "Speech rate multiplier: 1.0 is natural, higher is faster.",
+                "help": "Speech-rate multiplier applied to the cloned voice: 1.0 is the model's "
+                        "natural pace, higher is faster.",
                 "apply": "now",
                 "min": 0.5,
                 "max": 2.0,
@@ -132,7 +134,7 @@ SCHEMA = {
             "sentence_pause_s": {
                 "type": "float",
                 "label": "Sentence pause (s)",
-                "help": "Silence inserted between sentences within one synthesis.",
+                "help": "Silence appended after each spoken sentence.",
                 "apply": "now",
                 "min": 0.0,
                 "max": 1.0,

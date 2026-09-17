@@ -18,6 +18,7 @@ from types import SimpleNamespace
 import numpy as np
 
 from app import config
+from app.conversation import SessionStore
 from app.pipeline import VoiceSession
 
 
@@ -48,7 +49,7 @@ class FakeWS:
 class FakeTTS:
     def __init__(self, delay: float = 0.02, secs: float = 0.05) -> None:
         self.delay = delay
-        self.n = int(secs * 24000)
+        self.n = int(secs * 48000)
         self.calls: list[str] = []
         self._lock = threading.Lock()
 
@@ -82,11 +83,7 @@ def make_engines(agent: FakeAgent, tts: FakeTTS):
         stt=SimpleNamespace(transcribe=lambda samples: "hello there"),
         tts=tts,
         agent=agent,
-        conversation=SimpleNamespace(
-            messages=lambda: [],
-            add_turn=lambda user, answer: None,
-            maybe_compact=lambda summarize: None,
-        ),
+        sessions=SessionStore(),  # in-memory: no data_dir
     )
 
 

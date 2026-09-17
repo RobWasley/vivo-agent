@@ -136,6 +136,46 @@ def test_reply_without_history_unchanged():
     assert [m["role"] for m in messages] == ["system", "user"]
 
 
+def test_user_profile_appended_to_system_prompt():
+    client = FakeClient(streams=[_sse(_text_delta("hi"))])
+    agent = Agent(
+        "http://x/v1", "m", "P", system_prompt="S",
+        user_profile="User profile: Your user's name is Rob.", client=client,
+    )
+    list(agent.reply("hello", lambda n, a: "r"))
+    system = client.payloads[0]["messages"][0]["content"]
+    assert system == "P\nS\nUser profile: Your user's name is Rob."
+
+
+def test_system_prompt_without_user_profile_unchanged():
+    client = FakeClient(streams=[_sse(_text_delta("hi"))])
+    agent = Agent("http://x/v1", "m", "P", system_prompt="S", client=client)
+    list(agent.reply("hello", lambda n, a: "r"))
+    assert client.payloads[0]["messages"][0]["content"] == "P\nS"
+
+
+def test_user_profile_from_config(monkeypatch):
+    from app import pipeline
+
+    monkeypatch.setattr(config, "USER_NAME", "Rob")
+    monkeypatch.setattr(config, "USER_LOCATION", "Bristol, UK")
+    monkeypatch.setattr(config, "USER_TIMEZONE", "Europe/London")
+    monkeypatch.setattr(config, "USER_UNITS", "imperial")
+    profile = pipeline.user_profile()
+    for frag in ("Rob", "Bristol, UK", "Europe/London", "imperial"):
+        assert frag in profile, profile
+
+
+def test_user_profile_empty_when_unset(monkeypatch):
+    from app import pipeline
+
+    monkeypatch.setattr(config, "USER_NAME", "")
+    monkeypatch.setattr(config, "USER_LOCATION", "")
+    monkeypatch.setattr(config, "USER_TIMEZONE", "")
+    monkeypatch.setattr(config, "USER_UNITS", "metric")
+    assert pipeline.user_profile() == ""
+
+
 def test_tool_calls_run_in_parallel_and_errors_are_feedback():
     client = FakeClient(
         streams=[

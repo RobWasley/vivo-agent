@@ -39,6 +39,10 @@ def test_missing_file_uses_built_in_defaults(cfg, tmp_path):
     assert cfg.LLM_MAX_TOKENS == 600
     assert cfg.SENTENCE_MAX_CHARS == 90
     assert cfg.VAD_REOPEN_MS == 600
+    assert cfg.USER_NAME == ""
+    assert cfg.USER_LOCATION == ""
+    assert cfg.USER_TIMEZONE == ""
+    assert cfg.USER_UNITS == "metric"
     assert cfg.FILLER_PHRASES == (
         "Let me think about that.",
         "Working on it.",
@@ -60,6 +64,12 @@ max_tokens = 250
 [persona]
 blurb = "Custom persona."
 system_prompt = "Be very brief."
+
+[user]
+name = "Rob"
+location = "Bristol, UK"
+timezone = "Europe/London"
+units = "imperial"
 
 [filler]
 first_after_s = 1.5
@@ -103,6 +113,10 @@ exec_timeout_s = 30
     assert cfg.LLM_MAX_TOKENS == 250
     assert cfg.PERSONA == "Custom persona."
     assert cfg.SYSTEM_PROMPT == "Be very brief."
+    assert cfg.USER_NAME == "Rob"
+    assert cfg.USER_LOCATION == "Bristol, UK"
+    assert cfg.USER_TIMEZONE == "Europe/London"
+    assert cfg.USER_UNITS == "imperial"
     assert cfg.THINK_FILLER_FIRST_AFTER == 1.5
     assert cfg.THINK_FILLER_INTERVAL == 3.0
     assert cfg.FILLER_PHRASES == ("Hmm.",)

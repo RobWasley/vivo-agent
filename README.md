@@ -140,6 +140,12 @@ max_tokens = 600                                     # LLM_MAX_TOKENS
 blurb = "You are vivo, a helpful voice assistant. …"  # PERSONA
 system_prompt = """…voice-UX rules, appended to the blurb…"""  # file only
 
+[user]
+name = ""                                             # USER_NAME
+location = ""                                         # USER_LOCATION (place name, e.g. "Bristol, UK")
+timezone = ""                                         # USER_TIMEZONE (IANA, e.g. "Europe/London")
+units = "metric"                                      # USER_UNITS (metric | imperial)
+
 [filler]
 first_after_s = 2.0                                  # THINK_FILLER_FIRST_AFTER
 interval_s = 8.0                                     # THINK_FILLER_INTERVAL
@@ -321,7 +327,7 @@ app/
   config_schema.py  typed schema: pane, validation, file comments, write-back
 static/           browser UI: wobbly canvas dot, mic capture, playback, sidebar, settings pane
 vivo.toml         central configuration (rewritten by the settings pane, env-overridable)
-tests/            unit + live WS pipeline tests (131)
+tests/            unit + live WS pipeline tests (142)
 ```
 
 ## Tests

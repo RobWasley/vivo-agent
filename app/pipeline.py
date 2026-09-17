@@ -100,6 +100,35 @@ _TTS_DONE = None  # queue sentinel: no more sentences will be enqueued
 FILLER_PHRASES = config.FILLER_PHRASES
 
 
+def user_profile() -> str:
+    """The [user] settings (T023) as a system-prompt block: who vivo is
+    talking to, where they are, their time zone and units. The tools also
+    read the same settings directly (weather default location/units,
+    get_time timezone). Returns "" when nothing is set."""
+    name = config.USER_NAME.strip()
+    location = config.USER_LOCATION.strip()
+    tz = config.USER_TIMEZONE.strip()
+    units = config.USER_UNITS.strip().lower()
+    parts = []
+    if name:
+        parts.append(f"Your user's name is {name}.")
+    if location:
+        parts.append(f"They are in {location}" + (f", time zone {tz}" if tz else "") + ".")
+    elif tz:
+        parts.append(f"Their time zone is {tz}.")
+    if units == "imperial":
+        parts.append("They use imperial units (°F, mph).")
+    else:
+        parts.append("They use metric units (°C, km/h).")
+    parts.append(
+        "Unless they ask about another place or time zone, use their location "
+        "for weather questions and their time zone for time questions."
+    )
+    if not (name or location or tz or units != "metric"):
+        return ""
+    return "User profile: " + " ".join(parts)
+
+
 class SentenceChunker:
     """Splits a stream of text deltas into speakable sentences.
 
@@ -330,6 +359,7 @@ class Engines:
             thinking=config.LLM_THINKING, max_tokens=config.LLM_MAX_TOKENS,
             max_tool_rounds=config.MAX_TOOL_ROUNDS,
             system_prompt=config.SYSTEM_PROMPT,
+            user_profile=user_profile(),
         )
         self.sessions = SessionStore(
             data_dir=config.DATA_DIR,
@@ -356,6 +386,7 @@ def apply_config(engines: Engines) -> None:
     a.model = config.LLM_MODEL
     a.persona = config.PERSONA
     a.system_prompt = config.SYSTEM_PROMPT
+    a.user_profile = user_profile()
     a.thinking = config.LLM_THINKING
     a.max_tokens = config.LLM_MAX_TOKENS
     a.max_tool_rounds = config.MAX_TOOL_ROUNDS

@@ -22,6 +22,17 @@ blurb = "You are vivo, a helpful voice assistant. Keep replies to one or two sho
 # Voice-UX instructions appended to the persona: how to speak, when to use tools, how to summarise results.
 system_prompt = "You are a hands-free voice assistant; your replies are spoken aloud. Keep replies to one or two short spoken sentences and summarise tool results in plain words; never read raw output, code, or lists aloud. You have a sandboxed shell (exec) and file tools (read_file, write_file, list_dir) in the workspace directory (/workspace), current weather, web search, and web page reading. Prefer quick commands. Before a tool call that may take a while (search, fetch, long command), first say in a few words what you are doing. If a tool fails, try once differently, then say what went wrong. Earlier conversation context may be included; use it naturally and do not repeat it back."
 
+[user]
+# User profile
+# vivo addresses you by this name.
+name = ""
+# Your place, e.g. "Bristol, UK". Default for weather questions; ask about other places by name.
+location = ""
+# IANA time zone, e.g. "Europe/London". Used for time questions; empty means the container's time zone (UTC).
+timezone = ""
+# Units in weather answers: metric is °C and km/h, imperial is °F and mph.
+units = "metric"
+
 [filler]
 # Thinking fillers
 # How long vivo waits without speakable text before starting to fill the silence with a phrase.
@@ -68,7 +79,7 @@ min_speech_ms = 200
 # Silence that puts an utterance on pause.
 min_silence_ms = 2900
 # Extra silence an utterance survives: speech resuming within this window continues the same utterance (breath pauses). 0 disables it.
-reopen_ms = 600
+reopen_ms = 300
 # Context added around each captured utterance.
 speech_pad_ms = 200
 # Hard cap on a single utterance; longer speech is cut off and processed.

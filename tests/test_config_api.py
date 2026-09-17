@@ -18,7 +18,7 @@ from app import config, config_schema, main, pipeline
 from app.conversation import SessionStore
 
 ROOT = Path(__file__).resolve().parent.parent
-SECTIONS = ["llm", "persona", "filler", "voice", "stt", "vad", "barge_in", "memory", "agent"]
+SECTIONS = ["llm", "persona", "user", "filler", "voice", "stt", "vad", "barge_in", "memory", "agent"]
 
 
 @pytest.fixture()

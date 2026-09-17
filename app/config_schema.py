@@ -75,6 +75,42 @@ SCHEMA = {
             },
         },
     },
+    "user": {
+        "title": "User profile",
+        "keys": {
+            "name": {
+                "type": "str",
+                "label": "Your name",
+                "help": "vivo addresses you by this name.",
+                "apply": "now",
+                "attr": "USER_NAME",
+            },
+            "location": {
+                "type": "str",
+                "label": "Location",
+                "help": "Your place, e.g. \"Bristol, UK\". Default for weather questions; "
+                        "ask about other places by name.",
+                "apply": "now",
+                "attr": "USER_LOCATION",
+            },
+            "timezone": {
+                "type": "str",
+                "label": "Time zone",
+                "help": "IANA time zone, e.g. \"Europe/London\". Used for time questions; "
+                        "empty means the container's time zone (UTC).",
+                "apply": "now",
+                "attr": "USER_TIMEZONE",
+            },
+            "units": {
+                "type": "str",
+                "label": "Units",
+                "help": "Units in weather answers: metric is °C and km/h, imperial is °F and mph.",
+                "apply": "now",
+                "choices": ["metric", "imperial"],
+                "attr": "USER_UNITS",
+            },
+        },
+    },
     "filler": {
         "title": "Thinking fillers",
         "keys": {

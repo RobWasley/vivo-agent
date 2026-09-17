@@ -104,6 +104,15 @@ def _emit() -> None:
         "conversation context may be included; use it naturally and do not repeat it back.",
     )
 
+    # --- User profile (T023) ---------------------------------------------------
+    # Injected into the system prompt so the model knows who it is talking to,
+    # and used directly by the tools: location is the weather default, timezone
+    # drives get_time, units drive the weather answer. Empty = not set.
+    g["USER_NAME"] = _get("user", "name", "USER_NAME", "")
+    g["USER_LOCATION"] = _get("user", "location", "USER_LOCATION", "")
+    g["USER_TIMEZONE"] = _get("user", "timezone", "USER_TIMEZONE", "")
+    g["USER_UNITS"] = _get("user", "units", "USER_UNITS", "metric")
+
     # --- Thinking fillers (T015) ---------------------------------------------
     g["THINK_FILLER_FIRST_AFTER"] = _get("filler", "first_after_s", "THINK_FILLER_FIRST_AFTER", 2.0, float)
     g["THINK_FILLER_INTERVAL"] = _get("filler", "interval_s", "THINK_FILLER_INTERVAL", 8.0, float)
@@ -213,6 +222,12 @@ def effective_dict() -> dict:
         "persona": {
             "blurb": g["PERSONA"],
             "system_prompt": g["SYSTEM_PROMPT"],
+        },
+        "user": {
+            "name": g["USER_NAME"],
+            "location": g["USER_LOCATION"],
+            "timezone": g["USER_TIMEZONE"],
+            "units": g["USER_UNITS"],
         },
         "filler": {
             "first_after_s": g["THINK_FILLER_FIRST_AFTER"],

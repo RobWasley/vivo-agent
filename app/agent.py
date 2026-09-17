@@ -51,6 +51,7 @@ class Agent:
         max_tool_rounds: int = DEFAULT_MAX_TOOL_ROUNDS,
         thinking: bool = False,
         system_prompt: str = "",
+        user_profile: str = "",
         timeout: float = 120.0,
         client: Optional[httpx.Client] = None,
     ):
@@ -58,6 +59,7 @@ class Agent:
         self.model = model
         self.persona = persona
         self.system_prompt = system_prompt
+        self.user_profile = user_profile
         self.tools = tools
         self.thinking = thinking
         self.max_tokens = max_tokens
@@ -160,6 +162,8 @@ class Agent:
         system = self.persona
         if self.system_prompt:
             system = f"{self.persona}\n{self.system_prompt}"
+        if self.user_profile:
+            system = f"{system}\n{self.user_profile}"
         messages = [{"role": "system", "content": system}]
         if history:
             messages.extend(history)

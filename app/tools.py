@@ -1,11 +1,15 @@
-"""Tools for the smol agent: get_time, weather (open-meteo), file tools
-(sandboxed to WORK_DIR), shell exec (app/shell.py), web search/fetch
-(app/web.py)."""
+"""Tools for the smol agent: get_time, weather (open-meteo, geocoded
+place names), file tools (sandboxed to WORK_DIR), shell exec (app/shell.py),
+web search/fetch (app/web.py).
+
+get_time and weather honour the [user] profile (T023): the user's time zone
+for time answers, and their location + units for weather."""
 from __future__ import annotations
 
 import datetime
 import os
 from typing import List
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import httpx
 
@@ -64,31 +68,79 @@ MAX_READ_CHARS = 4000
 
 
 def get_time() -> str:
-    now = datetime.datetime.now()
-    return now.strftime("It is %A, %B %d, %Y, %H:%M.")
+    """Current date/time in the user's configured time zone (T023); falls back
+    to the local (container) time zone when none is set or the name is bad."""
+    tz_name = config.USER_TIMEZONE.strip()
+    tz = None
+    if tz_name:
+        try:
+            tz = ZoneInfo(tz_name)
+        except (ZoneInfoNotFoundError, ValueError):
+            tz = None
+    now = datetime.datetime.now(tz) if tz else datetime.datetime.now().astimezone()
+    label = tz_name if tz else (now.tzname() or "local time")
+    return now.strftime(f"It is %A, %B %d, %Y, %H:%M in {label}.")
 
 
-def weather(latitude: float, longitude: float) -> str:
+_GEO_CACHE: dict[str, tuple[float, float]] = {}
+
+
+def _geocode(place: str) -> tuple[float, float] | None:
+    """Place name -> (lat, lon) via open-meteo's free geocoding API (no key).
+    Successful lookups are cached for the process lifetime."""
+    key = place.strip().lower()
+    if key in _GEO_CACHE:
+        return _GEO_CACHE[key]
     r = httpx.get(
-        "https://api.open-meteo.com/v1/forecast",
-        params={
-            "latitude": latitude,
-            "longitude": longitude,
-            "current": (
-                "temperature_2m,apparent_temperature,weather_code,"
-                "wind_speed_10m,relative_humidity_2m"
-            ),
-            "timezone": "auto",
-        },
-        timeout=15.0,
+        "https://geocoding-api.open-meteo.com/v1/search",
+        params={"name": place.strip(), "count": 1},
+        timeout=10.0,
     )
+    r.raise_for_status()
+    results = r.json().get("results") or []
+    if not results:
+        return None
+    coords = (float(results[0]["latitude"]), float(results[0]["longitude"]))
+    _GEO_CACHE[key] = coords
+    return coords
+
+
+def weather(location: str = "") -> str:
+    """Current weather for `location` (a place name), or the user's default
+    location from the [user] profile when omitted. Units follow the profile
+    (metric: °C/km/h, imperial: °F/mph)."""
+    place = location.strip() or config.USER_LOCATION.strip()
+    if not place:
+        return (
+            "error: no location given and no default location is set — ask the "
+            "user where they are, or set their location in the settings"
+        )
+    coords = _geocode(place)
+    if coords is None:
+        return f"error: could not find a place called {place!r} — try a different name"
+    imperial = config.USER_UNITS.strip().lower() == "imperial"
+    params = {
+        "latitude": coords[0],
+        "longitude": coords[1],
+        "current": (
+            "temperature_2m,apparent_temperature,weather_code,"
+            "wind_speed_10m,relative_humidity_2m"
+        ),
+        "timezone": "auto",
+    }
+    if imperial:
+        params["temperature_unit"] = "fahrenheit"
+        params["wind_speed_unit"] = "mph"
+    r = httpx.get("https://api.open-meteo.com/v1/forecast", params=params, timeout=15.0)
     r.raise_for_status()
     cur = r.json()["current"]
     desc = WMO_CODES.get(int(cur["weather_code"]), "unknown conditions")
+    temp_unit = "degrees Fahrenheit" if imperial else "degrees Celsius"
+    wind_unit = "miles per hour" if imperial else "kilometers per hour"
     return (
-        f"It is {round(cur['temperature_2m'])} degrees, feels like "
-        f"{round(cur['apparent_temperature'])}, with {desc}, wind "
-        f"{round(cur['wind_speed_10m'])} kilometers per hour, and "
+        f"It is {round(cur['temperature_2m'])} {temp_unit}, feels like "
+        f"{round(cur['apparent_temperature'])} {temp_unit}, with {desc}, wind "
+        f"{round(cur['wind_speed_10m'])} {wind_unit}, and "
         f"{round(cur['relative_humidity_2m'])} percent humidity."
     )
 
@@ -156,14 +208,20 @@ TOOLS: List[dict] = [
         "type": "function",
         "function": {
             "name": "weather",
-            "description": "Get the current weather for a location.",
+            "description": (
+                "Get the current weather. With no location it uses the user's "
+                "default location from their profile; pass a place name for "
+                "another place."
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "latitude": {"type": "number"},
-                    "longitude": {"type": "number"},
+                    "location": {
+                        "type": "string",
+                        "description": "Place name, e.g. \"Paris\". Omit for the user's location.",
+                    },
                 },
-                "required": ["latitude", "longitude"],
+                "required": [],
             },
         },
     },
@@ -276,7 +334,7 @@ def execute(name: str, args: dict) -> str:
         if name == "get_time":
             result = get_time()
         elif name == "weather":
-            result = weather(float(args["latitude"]), float(args["longitude"]))
+            result = weather(str(args.get("location", "")))
         elif name == "read_file":
             result = read_file(str(args["path"]))
         elif name == "write_file":

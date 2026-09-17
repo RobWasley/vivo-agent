@@ -20,27 +20,29 @@ max_tokens = 608
 # One or two sentences describing who vivo is. Prepended to the system prompt.
 blurb = "You are vivo, a helpful voice assistant. Keep replies to one or two short spoken sentences."
 # Voice-UX instructions appended to the persona: how to speak, when to use tools, how to summarise results.
-system_prompt = "You are a hands-free voice assistant; your replies are spoken aloud. Keep replies to one or two short spoken sentences and summarise tool results in plain words; never read raw output, code, or lists aloud. You have a sandboxed shell (exec) and file tools (read_file, write_file, list_dir) in the workspace directory, current weather, web search, and web page reading. Prefer quick commands. Before a tool call that may take a while (search, fetch, long command), first say in a few words what you are doing. If a tool fails, try once differently, then say what went wrong. Earlier conversation context may be included; use it naturally and do not repeat it back."
+system_prompt = "You are a hands-free voice assistant; your replies are spoken aloud. Keep replies to one or two short spoken sentences and summarise tool results in plain words; never read raw output, code, or lists aloud. You have a sandboxed shell (exec) and file tools (read_file, write_file, list_dir) in the workspace directory (/workspace), current weather, web search, and web page reading. Prefer quick commands. Before a tool call that may take a while (search, fetch, long command), first say in a few words what you are doing. If a tool fails, try once differently, then say what went wrong. Earlier conversation context may be included; use it naturally and do not repeat it back."
 
 [filler]
 # Thinking fillers
 # How long vivo waits without speakable text before starting to fill the silence with a phrase.
 first_after_s = 2
 # Gap between repeated filler phrases while the model keeps thinking.
-interval_s = 8
+interval_s = 15
 # Short phrases vivo speaks while thinking, one per line. Keep them brief — each one is synthesised separately.
 phrases = ["Let me think about that.", "Working on it.", "One moment.", "Hmm, give me a second.", "Still thinking.", "Let me work that out."]
 
 [voice]
 # Voice (TTS)
 # Kokoro voice used for all speech.
-tts_voice = "af_nova"
+tts_voice = "af_heart"
 # Speech rate multiplier: 1.0 is natural, higher is faster.
 tts_speed = 1
 # Silence inserted between sentences within one synthesis.
 sentence_pause_s = 0.2
 # Hard split for long unpunctuated text. Shorter means the first audio arrives sooner at the cost of choppier phrasing.
 sentence_max_chars = 90
+# Split at clause punctuation (comma, semicolon, colon) once a sentence exceeds this length, so TTS can start before the whole sentence is generated. 0 disables it. Lower cuts first-audio latency; higher sounds smoother.
+clause_max_chars = 40
 # Sentences buffered between the LLM and TTS. Bigger hides TTS hiccups, smaller cuts latency.
 tts_queue_size = 2
 

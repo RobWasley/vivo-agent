@@ -55,7 +55,8 @@ def test_schema_attrs_match_effective_values():
 
 
 def test_validate_accepts_effective_values():
-    assert config_schema.validate(config.effective_dict(), voices=("af_heart",)) == []
+    # the live voice comes from the user-editable vivo.toml (T019)
+    assert config_schema.validate(config.effective_dict(), voices=(config.TTS_VOICE,)) == []
 
 
 def test_validate_rejects_bad_values():
@@ -146,7 +147,7 @@ def test_api_get_returns_values_schema_voices(api_env):
         j = c.get("/api/config").json()
     assert set(j["schema"]) == set(SECTIONS)
     assert j["voices"] == ["af_heart", "am_michael"]
-    assert j["values"]["voice"]["tts_voice"] == "af_heart"
+    assert j["values"]["voice"]["tts_voice"] == config.TTS_VOICE
     assert j["schema"]["voice"]["keys"]["tts_voice"]["type"] == "voices"
 
 

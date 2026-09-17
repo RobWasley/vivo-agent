@@ -42,12 +42,29 @@ def fjson(frame) -> dict:
     return json.loads(frame)
 
 
+def tail_silence_samples() -> int:
+    """Tail silence for endpointing must exceed the *running service's* VAD
+    min_silence + reopen (the file is user-editable, T019), plus a margin."""
+    import urllib.parse
+    import urllib.request
+
+    parts = urllib.parse.urlsplit(WS_URL)
+    scheme = "https" if parts.scheme == "wss" else "http"
+    try:
+        with urllib.request.urlopen(
+            f"{scheme}://{parts.netloc}/api/config", timeout=5
+        ) as r:
+            vad = json.load(r)["values"]["vad"]
+        ms = vad["min_silence_ms"] + vad["reopen_ms"]
+    except Exception:
+        ms = 1000  # built-in defaults: 400 + 600
+    return int((ms / 1000.0 + 0.5) * 16000)
+
+
 async def send_utterance(ws, pcm16: np.ndarray, frame: int = 3200) -> None:
     for i in range(0, len(pcm16), frame):
         await ws.send(pcm16[i : i + frame].tobytes())
-    # tail silence for endpointing: must exceed VAD min_silence + reopen
-    # (1.0 s default) beyond the last voiced window, so send 1.5 s
-    await ws.send(np.zeros(24000, dtype="<i2").tobytes())
+    await ws.send(np.zeros(tail_silence_samples(), dtype="<i2").tobytes())
 
 
 async def recv_until(ws, predicate, timeout: float):

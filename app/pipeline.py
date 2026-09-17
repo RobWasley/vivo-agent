@@ -89,13 +89,39 @@ FILLER_PHRASES = config.FILLER_PHRASES
 
 
 class SentenceChunker:
-    """Splits a stream of text deltas into speakable sentences."""
+    """Splits a stream of text deltas into speakable sentences.
+
+    Sentence endings (. ! ?) always win. A still-open sentence is additionally
+    split at clause punctuation (comma, semicolon, colon) once the buffer
+    exceeds clause_max_chars, so TTS can start on the first clause instead of
+    waiting for the full sentence (T020); max_chars stays the hard backstop
+    for text without any punctuation.
+    """
 
     SENT_RE = re.compile(r"(?<=[.!?])\s+")
+    CLAUSE_RE = re.compile(r"[,;:] ")
 
-    def __init__(self, max_chars: int = 180):
+    def __init__(self, max_chars: int = 180, clause_max_chars: int = 0):
         self.max_chars = max_chars
+        self.clause_max_chars = clause_max_chars
         self._buf = ""
+
+    def _clause_splits(self) -> list[str]:
+        out: list[str] = []
+        if not self.clause_max_chars:
+            return out
+        while len(self._buf) > self.clause_max_chars:
+            cut = -1
+            for m in self.CLAUSE_RE.finditer(self._buf):
+                cut = m.end()  # last clause boundary; streaming deltas are
+                # small, so it sits close to the threshold
+            # A boundary too close to the start would emit a tiny fragment:
+            # wait for more text (or the max_chars hard split).
+            if cut < self.clause_max_chars // 2:
+                break
+            out.append(self._buf[:cut].strip())
+            self._buf = self._buf[cut:].lstrip()
+        return out
 
     def add(self, delta: str) -> list[str]:
         self._buf += delta
@@ -106,6 +132,7 @@ class SentenceChunker:
                 break
             out.append(self._buf[: m.end()].strip())
             self._buf = self._buf[m.end():]
+        out.extend(self._clause_splits())
         while len(self._buf) > self.max_chars:
             cut = self._buf.rfind(", ", 0, self.max_chars)
             if cut < self.max_chars // 2:
@@ -482,7 +509,10 @@ def _handle_utterance(
         )
         worker.start()
 
-        chunker = SentenceChunker(max_chars=config.SENTENCE_MAX_CHARS)
+        chunker = SentenceChunker(
+            max_chars=config.SENTENCE_MAX_CHARS,
+            clause_max_chars=config.CLAUSE_MAX_CHARS,
+        )
         history = engines.conversation.messages()
         filler = ThinkingFiller(session, gen, q, bench)
         filler.start()

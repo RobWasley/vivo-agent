@@ -141,6 +141,7 @@ tts_voice = "af_heart"          # TTS_VOICE — kokoro voice (see voices-v1.0.bi
 tts_speed = 1.0                 # TTS_SPEED
 sentence_pause_s = 0.2          # TTS_SENTENCE_PAUSE
 sentence_max_chars = 90         # SENTENCE_MAX_CHARS — hard split without punctuation
+clause_max_chars = 40           # CLAUSE_MAX_CHARS — clause split for early TTS start (0 = off)
 tts_queue_size = 2              # TTS_QUEUE_SIZE — LLM→TTS sentence queue bound
 
 [stt]

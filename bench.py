@@ -36,6 +36,8 @@ import subprocess
 import sys
 import threading
 import time
+import urllib.parse
+import urllib.request
 import wave
 from datetime import datetime, timezone
 
@@ -151,6 +153,22 @@ def load_pcm16(path: str) -> np.ndarray:
     return (np.clip(pcm, -1, 1) * 32767).astype("<i2")
 
 
+def tail_silence_samples(url: str) -> int:
+    """Endpointing tail: must exceed the service's VAD min_silence + reopen
+    (vivo.toml is user-editable, T019), plus a 0.5 s margin."""
+    parts = urllib.parse.urlsplit(url)
+    scheme = "https" if parts.scheme == "wss" else "http"
+    try:
+        with urllib.request.urlopen(
+            f"{scheme}://{parts.netloc}/api/config", timeout=5
+        ) as r:
+            vad = json.load(r)["values"]["vad"]
+        ms = vad["min_silence_ms"] + vad["reopen_ms"]
+    except Exception:
+        ms = 1000  # built-in defaults: 400 + 600
+    return int((ms / 1000.0 + 0.5) * 16000)
+
+
 async def run_ws(url: str, pcm16: np.ndarray, barge: bool, timeout: float = 240.0) -> dict:
     """One scripted session. Returns client-observed metrics (monotonic secs)."""
     t: dict = {}
@@ -160,7 +178,7 @@ async def run_ws(url: str, pcm16: np.ndarray, barge: bool, timeout: float = 240.
     async with websockets.connect(url, max_size=None) as ws:
         for i in range(0, len(pcm16), FRAME):
             await ws.send(pcm16[i:i + FRAME].tobytes())
-        await ws.send(np.zeros(16000, dtype="<i2").tobytes())  # tail silence
+        await ws.send(np.zeros(tail_silence_samples(url), dtype="<i2").tobytes())  # tail
         t["mic_done"] = time.monotonic()
         loop = asyncio.get_running_loop()
         deadline = loop.time() + timeout

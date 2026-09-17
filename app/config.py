@@ -126,6 +126,10 @@ def _emit() -> None:
     # SentenceChunker hard-split threshold (chars) when no punctuation boundary is
     # found: bounds first-audio latency on punctuation-poor LLM output (T014).
     g["SENTENCE_MAX_CHARS"] = _get("voice", "sentence_max_chars", "SENTENCE_MAX_CHARS", 90, int)
+    # Clause-level split (T020): once the buffered sentence exceeds this length and a
+    # clause boundary (comma/semicolon/colon) exists, the clause is emitted early so
+    # TTS can start before the full sentence is generated (0 = disabled).
+    g["CLAUSE_MAX_CHARS"] = _get("voice", "clause_max_chars", "CLAUSE_MAX_CHARS", 40, int)
     # LLM/TTS decoupling (T014): bounded per-reply queue of sentences between the
     # LLM producer and the single TTS consumer.
     g["TTS_QUEUE_SIZE"] = _get("voice", "tts_queue_size", "TTS_QUEUE_SIZE", 2, int)
@@ -216,6 +220,7 @@ def effective_dict() -> dict:
             "tts_speed": g["TTS_SPEED"],
             "sentence_pause_s": g["TTS_SENTENCE_PAUSE"],
             "sentence_max_chars": g["SENTENCE_MAX_CHARS"],
+            "clause_max_chars": g["CLAUSE_MAX_CHARS"],
             "tts_queue_size": g["TTS_QUEUE_SIZE"],
         },
         "stt": {

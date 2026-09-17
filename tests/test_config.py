@@ -163,15 +163,15 @@ def test_list_env_is_comma_separated(cfg, tmp_path):
 
 
 def test_shipped_vivo_toml_is_complete():
+    # vivo.toml is user-editable (settings pane, T019): assert it carries every
+    # schema key with schema-valid values, rather than pinning individual
+    # choices like voice or model.
+    from app import config_schema
+
     path = REPO_ROOT / "vivo.toml"
     with open(path, "rb") as f:
         data = tomllib.load(f)
-    assert data["llm"]["base_url"].endswith("/v1")
-    assert data["llm"]["thinking"] is True
-    assert data["persona"]["system_prompt"].startswith("You are a hands-free")
-    assert len(data["filler"]["phrases"]) >= 1
-    assert data["voice"]["tts_voice"] == "af_heart"
-    assert data["vad"]["reopen_ms"] == 600
-    assert data["barge_in"]["level_threshold"] == 0.25
-    assert data["memory"]["compact_after_chars"] == 12000
-    assert data["agent"]["max_tool_rounds"] == 8
+    schema_keys = {s: set(spec["keys"]) for s, spec in config_schema.SCHEMA.items()}
+    file_keys = {s: set(d.keys()) for s, d in data.items()}
+    assert file_keys == schema_keys
+    assert config_schema.validate(data, voices=(data["voice"]["tts_voice"],)) == []

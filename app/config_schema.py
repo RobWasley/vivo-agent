@@ -150,6 +150,18 @@ SCHEMA = {
                 "step": 10,
                 "attr": "SENTENCE_MAX_CHARS",
             },
+            "clause_max_chars": {
+                "type": "int",
+                "label": "Clause split (chars)",
+                "help": "Split at clause punctuation (comma, semicolon, colon) once a sentence exceeds "
+                        "this length, so TTS can start before the whole sentence is generated. 0 "
+                        "disables it. Lower cuts first-audio latency; higher sounds smoother.",
+                "apply": "next",
+                "min": 0,
+                "max": 200,
+                "step": 5,
+                "attr": "CLAUSE_MAX_CHARS",
+            },
             "tts_queue_size": {
                 "type": "int",
                 "label": "TTS queue size",

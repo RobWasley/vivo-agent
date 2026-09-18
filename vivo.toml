@@ -40,7 +40,7 @@ first_after_s = 3
 # Gap between repeated filler phrases while the model keeps thinking.
 interval_s = 40
 # Short phrases vivo speaks while thinking, one per line. Keep them brief — each one is synthesised separately.
-phrases = ["Let me think about that.", "Working on it.", "One moment.", "Give me a second.", "Let me work that out.", "This one's tricky... give me a moment."]
+phrases = ["Let me think about that one more indepth.", "Hmmmm.... that's a tough one, this needs some thought.", "Give me a moment, I'm just trying to figuring things out.", "Give me a second... maybe more than one actually.", "This one's tricky... give me a moment... or two."]
 
 [voice]
 # Voice (TTS)
@@ -94,14 +94,27 @@ sustain_ms = 250
 # Grace period after a barge-in before another one can trigger.
 cooldown_ms = 700
 
+[wake]
+# Wake phrase
+# Say this to wake vivo: she listens silently for it and ignores everything else, so ambient speech doesn't flood the transcript. Anything after the phrase in the same utterance is answered too. An empty phrase disables the wake word (she answers every utterance).
+phrase = "hey vivo"
+# Once awake, vivo returns to silent listening after you stay quiet this long. Any exchange restarts the clock; it never fires while she is replying.
+session_timeout_s = 300
+# Saying one of these (one per line) ends the session early: vivo confirms and returns to silent listening.
+end_phrases = ["that's all", "goodbye", "go to sleep", "we're done", "we are done"]
+# What vivo says right after the wake phrase when nothing else was said.
+ack = "I'm listening"
+# What vivo says when a session ends (timeout or end phrase).
+goodnight = "Okay, going quiet."
+
 [memory]
 # Conversation memory
 # Once the conversation history grows past this, older turns are summarised to keep the context small.
-dream_interval_s = 3600
+compact_after_chars = 12000
 # How many recent turns stay verbatim during compaction.
 keep_recent_turns = 4
-# Once the conversation history grows past this, older turns are summarised to keep the context small.
-compact_after_chars = 12000
+# How often the background pass reviews local memory and keeps only high-value facts.
+dream_interval_s = 3600
 
 [agent]
 # Agent tools

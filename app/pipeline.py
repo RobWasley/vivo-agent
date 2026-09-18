@@ -35,13 +35,18 @@ Protocol (JSON text frames unless noted):
     binary            int16 mono 16 kHz PCM (any frame size)
     {"type":"barge_in"}   cancel the active reply (stop speaking, abort LLM)
     {"type":"flush"}      force-close an in-progress utterance
+    {"type":"wake"}       manually wake vivo (T024)
     {"type":"session"}           start a new session, bind this connection to it
     {"type":"session","id":str}  bind this connection to an existing session
     {"type":"ping"}       -> {"type":"pong"}
   server -> client
-    {"type":"config","barge_in":{level_threshold,sustain_ms,cooldown_ms}}
-                                  sent on connect and after settings are saved
-                                  (T019); UI auto-barge timings (vivo.toml [barge_in])
+    {"type":"config","barge_in":{level_threshold,sustain_ms,cooldown_ms},
+                  "wake":{phrase}}
+                                   sent on connect and after settings are saved
+                                   (T019); UI auto-barge timings (vivo.toml
+                                   [barge_in]) and the wake phrase (T024)
+    {"type":"wake","active":bool}  wake-phrase session state (T024); sent on
+                                   connect and whenever it changes
     {"type":"session","id":str[,"created":true]}
                                   sent on connect (the session this connection
                                   is bound to) and after a session command
@@ -68,6 +73,15 @@ a SessionStore (app/conversation.py). A connection may connect with
 it binds to the active session. Session commands rebind the connection AND
 make that session active for new connections; the new conversation applies
 from the next utterance. Sessions are also managed via /api/sessions.
+
+Wake phrase (T024): with a configured wake phrase, vivo starts asleep —
+every utterance is still transcribed, but only one containing the phrase
+reaches the LLM (the rest is dropped: no transcript frame, no reply, nothing
+stored). The text after the phrase is answered as a normal request; a
+phrase-only utterance gets a spoken ack instead of an LLM round trip. The
+shared Engines.wake state ends the session on an end phrase or when the idle
+timeout elapses (checked from the audio path, never while a reply is in
+progress), speaking a goodnight. An empty phrase disables the feature.
 """
 
 from __future__ import annotations
@@ -92,6 +106,7 @@ from app.reminders import ReminderScheduler, ReminderStore, get_default_schedule
 from app.stt import STT
 from app.tts import TTS
 from app.vad import VAD
+from app.wake import WakeState
 
 log = logging.getLogger("vivo.pipeline")
 
@@ -395,6 +410,9 @@ class Engines:
             compact_after_chars=config.COMPACT_AFTER_CHARS,
             keep_recent_turns=config.KEEP_RECENT_TURNS,
         )
+        self.wake = WakeState(
+            config.WAKE_PHRASE, config.WAKE_END_PHRASES, config.WAKE_SESSION_TIMEOUT_S
+        )
 
     def _handle_due_reminder(self, reminder: dict) -> None:
         text = str(reminder.get("text", "Reminder")).strip()
@@ -461,6 +479,9 @@ def apply_config(engines: Engines) -> None:
         engines.dream_scheduler.interval_seconds = config.DREAM_INTERVAL_S
     shell.MAX_TIMEOUT = config.EXEC_MAX_TIMEOUT  # shell.py snapshots it at import
     FILLER_PHRASES = config.FILLER_PHRASES  # ThinkingFiller reads the module global
+    engines.wake.update(
+        config.WAKE_PHRASE, config.WAKE_END_PHRASES, config.WAKE_SESSION_TIMEOUT_S
+    )
 
 
 class VoiceSession:
@@ -627,6 +648,38 @@ def _handle_utterance(
         log.info("stt %.2fs: %r", bench.events["stt_end"], text[:100])
         if not session.alive(gen):
             return
+        # Wake-phrase gate (T024): while asleep, only an utterance containing
+        # the phrase is processed; the text after the phrase is the prompt
+        # (with the ack spoken first). While awake, an end phrase closes the
+        # session.
+        wake = engines.wake
+        fixed_reply: str | None = None   # spoken as-is, no LLM (ack / goodnight)
+        wake_prefix: str | None = None   # spoken before the LLM reply (ack)
+        prompt_text: str | None = text
+        if wake.enabled and not wake.active:
+            m = wake.match_wake(text)
+            if m is None:
+                log.debug("asleep: ignored %r", text[:100])
+                return
+            wake.wake()
+            broadcast_wake(wake)
+            remainder = text[m.end():].lstrip(" \t,.;!?:-").strip()
+            if remainder:
+                prompt_text = remainder
+                wake_prefix = config.WAKE_ACK
+            else:
+                fixed_reply = config.WAKE_ACK
+            log.info("woken by %r", text[:100])
+        elif wake.active:
+            ended = wake.match_end(text)
+            if ended is not None:
+                wake.sleep()
+                broadcast_wake(wake)
+                fixed_reply = config.WAKE_GOODNIGHT
+                prompt_text = None
+                log.info("session ended by %r", ended)
+            else:
+                wake.touch()
         session.send({"type": "transcript", "text": text})
         if not text.strip():
             return
@@ -640,9 +693,6 @@ def _handle_utterance(
             max_chars=config.SENTENCE_MAX_CHARS,
             clause_max_chars=config.CLAUSE_MAX_CHARS,
         )
-        history = conv.messages()
-        filler = ThinkingFiller(session, gen, q, bench)
-        filler.start()
 
         def enqueue(sentence: str) -> None:
             nonlocal n_sentences
@@ -659,31 +709,49 @@ def _handle_utterance(
                 session.send({"type": "tool", "name": name, "result": str(result)})
             return result
 
-        for item in engines.agent.reply(text, execute, history=history):
-            if not session.alive(gen):
-                break
-            if isinstance(item, ReasoningDelta):
-                if not in_thinking:
-                    in_thinking = True
-                    think_started = time.monotonic()
-                    if "thinking_start" not in bench.events:
-                        bench.mark("thinking_start")
-                continue  # thinking: never spoken, never stored
-            if in_thinking:
-                in_thinking = False
-                bench.mark("thinking_end")
-                thinking_secs += time.monotonic() - think_started
-            if isinstance(item, ToolRound):
-                continue
-            if "llm_first_token" not in bench.events:
-                bench.mark("llm_first_token")
-            spoken.append(item)
-            filler.note_text()
-            session.send({"type": "agent_text", "delta": item})
-            for sentence in chunker.add(item):
+        if fixed_reply is not None:
+            # Deterministic reply (wake ack / goodnight): no LLM round trip,
+            # no filler, no tool access.
+            spoken.append(fixed_reply)
+            session.send({"type": "agent_text", "delta": fixed_reply})
+            for sentence in list(chunker.add(fixed_reply)) + chunker.flush():
                 enqueue(sentence)
-        for sentence in chunker.flush():
-            enqueue(sentence)
+        else:
+            filler = ThinkingFiller(session, gen, q, bench)
+            filler.start()
+            if wake_prefix is not None:
+                # Wake ack spoken before the LLM reply (phrase + request).
+                spoken.append(wake_prefix)
+                session.send({"type": "agent_text", "delta": wake_prefix})
+                for sentence in list(chunker.add(wake_prefix)) + chunker.flush():
+                    enqueue(sentence)
+            for item in engines.agent.reply(
+                prompt_text, execute, history=conv.messages()
+            ):
+                if not session.alive(gen):
+                    break
+                if isinstance(item, ReasoningDelta):
+                    if not in_thinking:
+                        in_thinking = True
+                        think_started = time.monotonic()
+                        if "thinking_start" not in bench.events:
+                            bench.mark("thinking_start")
+                    continue  # thinking: never spoken, never stored
+                if in_thinking:
+                    in_thinking = False
+                    bench.mark("thinking_end")
+                    thinking_secs += time.monotonic() - think_started
+                if isinstance(item, ToolRound):
+                    continue
+                if "llm_first_token" not in bench.events:
+                    bench.mark("llm_first_token")
+                spoken.append(item)
+                filler.note_text()
+                session.send({"type": "agent_text", "delta": item})
+                for sentence in chunker.add(item):
+                    enqueue(sentence)
+            for sentence in chunker.flush():
+                enqueue(sentence)
         bench.mark("generation_complete")
     except Exception as e:  # noqa: BLE001 - surface pipeline errors to the client
         log.exception("pipeline error")
@@ -739,6 +807,7 @@ def _handle_utterance(
 
 
 def _on_audio(session: VoiceSession, data: bytes) -> None:
+    _wake_tick(session)
     if len(data) < 2 or len(data) % 2:
         return
     pcm = np.frombuffer(data, dtype=np.int16).astype(np.float32) / 32768.0
@@ -754,8 +823,60 @@ def _on_audio(session: VoiceSession, data: bytes) -> None:
 _ACTIVE: set[VoiceSession] = set()
 
 
-def barge_config_msg() -> dict:
-    """The `config` handshake frame (UI barge + audio settings)."""
+def _wake_tick(session: VoiceSession) -> None:
+    """Wake-session idle timeout (T024), checked from the audio path so no
+    timer thread is needed. Never fires while a reply is in progress; the
+    clock was reset by the last exchange, so it fires right after a long
+    reply if the silence has lasted past the timeout."""
+    wake = session.engines.wake
+    if _any_reply_active():
+        return
+    if not wake.claim_sleep():
+        return
+    broadcast_wake(wake)
+    log.info("wake session expired (idle)")
+    _speak_goodnight(session.engines)
+
+
+def _any_reply_active() -> bool:
+    return any(not s.closed and s.reply_active for s in _ACTIVE)
+
+
+def _speak_goodnight(engines: Engines) -> None:
+    """Speak the goodnight confirmation to every open session (T024) —
+    reminder pattern: one synthesis, then text + audio + reply_done per
+    session, off the audio-path thread."""
+    text = config.WAKE_GOODNIGHT.strip()
+    if not text:
+        return
+    targets = [s for s in list(_ACTIVE) if not s.closed]
+    if not targets:
+        return
+
+    def _worker() -> None:
+        try:
+            audio = engines.tts.synthesize(text)
+        except Exception:  # noqa: BLE001 - degrade gracefully like reminders
+            log.exception("goodnight TTS synthesis failed")
+            return
+        for s in targets:
+            if s.closed:
+                continue
+            s.send({"type": "agent_text", "delta": text})
+        for s in targets:
+            if s.closed or audio.size == 0:
+                continue
+            pcm16 = (np.clip(audio, -1.0, 1.0) * 32767).astype("<i2")
+            s.send(pcm16.tobytes())
+        for s in targets:
+            if not s.closed:
+                s.send({"type": "reply_done"})
+
+    threading.Thread(target=_worker, daemon=True).start()
+
+
+def config_msg() -> dict:
+    """The `config` handshake frame (UI barge + wake + audio settings)."""
     return {
         "type": "config",
         "barge_in": {
@@ -763,6 +884,7 @@ def barge_config_msg() -> dict:
             "sustain_ms": config.BARGE_SUSTAIN_MS,
             "cooldown_ms": config.BARGE_COOLDOWN_MS,
         },
+        "wake": {"phrase": config.WAKE_PHRASE},
         "audio": {
             "tts_sample_rate": config.TTS_SAMPLE_RATE,
         },
@@ -771,7 +893,15 @@ def barge_config_msg() -> dict:
 
 def broadcast_config() -> None:
     """Re-send the `config` handshake to every open session (T019)."""
-    msg = barge_config_msg()
+    msg = config_msg()
+    for s in list(_ACTIVE):
+        if not s.closed:
+            s.send(msg)
+
+
+def broadcast_wake(wake: WakeState) -> None:
+    """Report wake-phrase session state (T024) to every open session."""
+    msg = {"type": "wake", "active": wake.active}
     for s in list(_ACTIVE):
         if not s.closed:
             s.send(msg)
@@ -792,9 +922,10 @@ async def serve_session(ws, engines: Engines) -> None:
     session = VoiceSession(ws, engines, session_id=pinned or None)
     _ACTIVE.add(session)
     # Session handshake, then UI tuning that used to be hardcoded in
-    # static/app.js (vivo.toml [barge_in]).
+    # static/app.js (vivo.toml [barge_in]), then wake-phrase state (T024).
     session.send({"type": "session", "id": session.session_id})
-    session.send(barge_config_msg())
+    session.send(config_msg())
+    session.send({"type": "wake", "active": engines.wake.active})
     try:
         while True:
             msg = await ws.receive()
@@ -828,6 +959,12 @@ async def serve_session(ws, engines: Engines) -> None:
                     session.send({"type": "session", "id": target})
                 else:
                     session.send({"type": "error", "message": f"unknown session: {target}"})
+            elif kind == "wake":
+                # Manual wake (UI button; also used by live tests to skip the
+                # spoken phrase). No-op when already awake or disabled.
+                if engines.wake.enabled and engines.wake.wake():
+                    broadcast_wake(engines.wake)
+                    log.info("manual wake")
             elif kind == "flush":
                 for ev in session.vad.flush():
                     if ev.type == "start":

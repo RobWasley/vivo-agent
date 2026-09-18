@@ -73,6 +73,7 @@ async def post_config(body: ConfigPayload, request: Request):
     config.refresh()
     pipeline.apply_config(engines)
     pipeline.broadcast_config()
+    pipeline.broadcast_wake(engines.wake)
     log.info("settings saved via UI")
     return {"ok": True, "values": config.effective_dict()}
 

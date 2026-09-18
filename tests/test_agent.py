@@ -157,12 +157,12 @@ def test_system_prompt_without_user_profile_unchanged():
 def test_user_profile_from_config(monkeypatch):
     from app import pipeline
 
-    monkeypatch.setattr(config, "USER_NAME", "Rob")
+    monkeypatch.setattr(config, "USER_NAME", "Alex")
     monkeypatch.setattr(config, "USER_LOCATION", "Bristol, UK")
     monkeypatch.setattr(config, "USER_TIMEZONE", "Europe/London")
     monkeypatch.setattr(config, "USER_UNITS", "imperial")
     profile = pipeline.user_profile()
-    for frag in ("Rob", "Bristol, UK", "Europe/London", "imperial"):
+    for frag in ("Alex", "Bristol, UK", "Europe/London", "imperial"):
         assert frag in profile, profile
 
 

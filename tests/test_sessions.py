@@ -20,6 +20,7 @@ from fastapi.testclient import TestClient
 from app import main, pipeline
 from app.conversation import Conversation, SessionStore
 from app.pipeline import VoiceSession
+from app.wake import WakeState
 
 
 # ---------------- SessionStore: basics ----------------
@@ -255,6 +256,7 @@ def _engines(store: SessionStore):
         tts=SimpleNamespace(synthesize=lambda text: None),
         agent=SimpleNamespace(summarize=lambda msgs: ""),
         sessions=store,
+        wake=WakeState(),  # disabled (no phrase): legacy always-answer behavior
     )
 
 
@@ -323,6 +325,7 @@ def test_serve_session_handshake_and_commands():
                 json.dumps({"type": "session"}),  # create a new one
                 json.dumps({"type": "session", "id": original}),  # switch back
                 json.dumps({"type": "session", "id": "nope"}),  # unknown
+                json.dumps({"type": "wake"}),  # no-op: fake engines have no phrase
             ]
         )
         await pipeline.serve_session(ws, engines)
@@ -330,9 +333,10 @@ def test_serve_session_handshake_and_commands():
             await asyncio.sleep(0)
 
         msgs = [m for m in ws.sent if isinstance(m, dict)]
-        # handshake: session frame first, then the config frame
+        # handshake: session frame first, then the config frame, then wake state
         assert msgs[0] == {"type": "session", "id": original}
         assert msgs[1]["type"] == "config"
+        assert msgs[2] == {"type": "wake", "active": False}
         sess = [m for m in msgs if m["type"] == "session"]
         created = [m for m in sess if m.get("created")]
         assert len(created) == 1

@@ -17,9 +17,10 @@ from types import SimpleNamespace
 
 import numpy as np
 
-from app import config
+from app import config, pipeline
 from app.conversation import SessionStore
 from app.pipeline import VoiceSession
+from app.wake import WakeState
 
 
 class FakeWS:
@@ -84,6 +85,7 @@ def make_engines(agent: FakeAgent, tts: FakeTTS):
         tts=tts,
         agent=agent,
         sessions=SessionStore(),  # in-memory: no data_dir
+        wake=WakeState(),  # disabled (no phrase): legacy always-answer behavior
     )
 
 
@@ -227,18 +229,24 @@ def test_barge_after_generation_complete_does_not_deadlock():
 
 
 def test_barge_timestamps_are_cleared_after_generation_finishes():
-    session = VoiceSession(FakeWS(), make_engines(FakeAgent(["hi"]), FakeTTS()))
-    session.reply_active = True
-    session.generation = 1
-    session.tts_queue = __import__("queue").Queue()
-    session.barge_mono[1] = 123.0
+    # A barge-in (release) records barge_mono[gen]; the interrupted
+    # generation's _handle_utterance finally-block pops it so the stale
+    # timestamp never leaks into the next generation's bench.
+    import queue as queue_mod
 
-    session.release()
-    assert 1 not in session.barge_mono
+    async def go() -> None:
+        # VoiceSession needs a running loop (it grabs one in __init__)
+        session = VoiceSession(FakeWS(), make_engines(FakeAgent(["hi"]), FakeTTS()))
+        for gen in (1, 2):
+            session.reply_active = True
+            session.generation = gen
+            session.tts_queue = queue_mod.Queue()
+            session.release()  # barge-in: records barge_mono[gen]
+            assert gen in session.barge_mono
+            # the interrupted handler runs its finally and pops the entry
+            pipeline._handle_utterance(
+                np.zeros(1600, dtype=np.int16), session, gen, queue_mod.Queue()
+            )
+            assert gen not in session.barge_mono
 
-    session.reply_active = True
-    session.generation = 2
-    session.tts_queue = __import__("queue").Queue()
-    session.barge_mono[2] = 456.0
-    session.release()
-    assert 2 not in session.barge_mono
+    asyncio.run(go())

@@ -2,8 +2,8 @@
  *
  * Protocol (see app/pipeline.py):
  *   client -> server : binary 16 kHz int16 PCM,
- *                      {"type":"barge_in"|"flush"|"ping"|{"type":"session"[,"id":str]}}
- *   server -> client : JSON start|end|transcript|agent_text|tool|barge_ack|reply_done|error|session|config
+ *                      {"type":"barge_in"|"flush"|"wake"|"ping"|{"type":"session"[,"id":str]}}
+ *   server -> client : JSON start|end|transcript|agent_text|tool|barge_ack|reply_done|error|session|config|wake
  *                      + binary int16 mono TTS chunks (one per sentence; sample rate via config.audio.tts_sample_rate)
  */
 "use strict";
@@ -33,6 +33,7 @@ const el = {
   btnStart: $("btn-start"),
   btnBarage: $("btn-barage"),
   btnFlush: $("btn-flush"),
+  btnWake: $("btn-wake"),
   btnDream: $("btn-dream"),
   btnClear: $("btn-clear"),
   sessionSelect: $("session-select"),
@@ -69,6 +70,9 @@ const S = {
   dropAudio: false, // ignore in-flight TTS frames after a barge until the next `end`
   ttsSampleRate: DEFAULT_PLAY_RATE,
   dreaming: false,
+  wakeEnabled: false, // wake phrase configured on the server (T024)
+  wakeActive: false, // wake-phrase session currently awake
+  wakePhrase: "", // the configured phrase, for the UI
   motionPreset: "balanced",
   prefersReducedMotion: false,
   blink: { active: false, startedAt: 0, duration: 0, nextAt: 0, doubleBlink: false },
@@ -180,8 +184,7 @@ async function startMic() {
   S.micActive = true;
   el.btnStart.textContent = "stop";
   el.btnStart.classList.add("active");
-  el.hint.innerHTML = "mic on &middot; talk to me";
-  updateStatus();
+  updateWakeUi();
 }
 
 function stopMic() {
@@ -196,7 +199,7 @@ function stopMic() {
   S.micLevelTarget = 0;
   el.btnStart.textContent = "start";
   el.btnStart.classList.remove("active");
-  el.hint.innerHTML = "mic off &middot; click <b>start</b> to allow the microphone";
+  updateHint();
   updateStatus();
 }
 
@@ -329,16 +332,27 @@ function handleServerJson(m) {
         const sr = Number(m.audio.tts_sample_rate);
         if (Number.isFinite(sr) && sr >= 8000 && sr <= 96000) S.ttsSampleRate = sr;
       }
-      return; // config never touches the status UI
+      if (m.wake) {
+        S.wakePhrase = String(m.wake.phrase ?? "");
+        S.wakeEnabled = S.wakePhrase.trim() !== "";
+      }
+      updateWakeUi();
+      return; // config never touches the pipeline UI
+    case "wake":
+      S.wakeActive = !!m.active;
+      updateWakeUi();
+      return; // wake state never touches the pipeline UI
     case "dream":
       S.dreaming = !!m.active;
       updateStatus();
       return;
     case "start":
+      if (S.wakeEnabled && !S.wakeActive) break; // dropped utterance while asleep
       setPipeline("listening");
       break;
     case "end":
       S.dropAudio = false; // a fresh reply: its audio is welcome again
+      if (S.wakeEnabled && !S.wakeActive) break; // dropped utterance while asleep
       setPipeline("thinking");
       break;
     case "transcript":
@@ -597,10 +611,29 @@ function updateStatus() {
   else if (S.pipeline === "speaking") [state, label] = ["speaking", "Speaking…"];
   else if (S.pipeline === "listening") [state, label] = ["listening", "Listening…"];
   else if (S.pipeline === "thinking") [state, label] = ["thinking", "Thinking…"];
+  else if (S.micActive && S.wakeEnabled && !S.wakeActive)
+    [state, label] = ["asleep", `Asleep &mdash; say &ldquo;${escapeHtml(S.wakePhrase)}&rdquo;`];
   else [state, label] = S.micActive ? ["ready", "Ready"] : ["ready", "Ready &mdash; mic off"];
 
   el.status.dataset.state = state;
   el.statusLabel.innerHTML = label;
+}
+
+function updateWakeUi() {
+  el.btnWake.disabled = !(S.wakeEnabled && !S.wakeActive);
+  updateHint();
+  updateStatus();
+}
+
+function updateHint() {
+  if (S.micActive && S.wakeEnabled && !S.wakeActive) {
+    el.hint.innerHTML =
+      `sleeping &middot; say &ldquo;${escapeHtml(S.wakePhrase)}&rdquo; to wake vivo`;
+  } else if (S.micActive) {
+    el.hint.innerHTML = "mic on &middot; talk to me";
+  } else {
+    el.hint.innerHTML = "mic off &middot; click <b>start</b> to allow the microphone";
+  }
 }
 
 /* ---------------- the dot ---------------- */
@@ -624,6 +657,7 @@ const STATE_COLORS = {
   thinking: ["#93c5fd", "#1d4ed8"],
   dreaming: ["#c4b5fd", "#6d28d9"],
   speaking: ["#fde68a", "#b45309"],
+  asleep: ["#64748b", "#1e293b"],
 };
 
 const MOTION_PRESETS = {
@@ -764,6 +798,7 @@ function currentDotState() {
   if (S.wsState !== "open") return S.wsState;
   if (S.dreaming) return "dreaming";
   if (S.play && S.play.sources.size > 0) return "speaking";
+  if (S.pipeline === "idle" && S.micActive && S.wakeEnabled && !S.wakeActive) return "asleep";
   return S.pipeline === "idle" ? "idle" : S.pipeline;
 }
 
@@ -962,11 +997,11 @@ function drawThinkingBubbles(cx, cy, R, time, weight) {
   c2d.restore();
 }
 
-function drawDreamingZs(cx, cy, R, time, weight) {
+function drawZzz(cx, cy, R, time, weight, rgb, speed) {
   if (weight < 0.02) return;
   const baseX = cx - R * 0.05;
   const baseY = cy - R * 1.18;
-  const drift = Math.sin(time * 2.2) * 8;
+  const drift = Math.sin(time * 2.2 * speed) * 8;
   const zzzs = ["z", "zz", "zzz"];
 
   c2d.save();
@@ -976,10 +1011,18 @@ function drawDreamingZs(cx, cy, R, time, weight) {
   for (let i = 0; i < zzzs.length; i++) {
     const ky = baseY - i * (R * 0.12) + drift * (i * 0.2 + 0.2);
     const kx = baseX + i * (R * 0.1);
-    c2d.fillStyle = `rgba(196, 181, 253, ${(0.45 + 0.35 * Math.sin(time * 2.5 + i)) * weight})`;
+    c2d.fillStyle = `rgba(${rgb}, ${(0.45 + 0.35 * Math.sin(time * 2.5 * speed + i)) * weight})`;
     c2d.fillText(zzzs[i], kx, ky);
   }
   c2d.restore();
+}
+
+function drawDreamingZs(cx, cy, R, time, weight) {
+  drawZzz(cx, cy, R, time, weight, "196, 181, 253", 1);
+}
+
+function drawAsleepZs(cx, cy, R, time, weight) {
+  drawZzz(cx, cy, R, time, weight, "203, 213, 225", 0.6);
 }
 
 function drawMouth(cx, cy, R, speakingWeight, thinkingWeight, playLevel, time) {
@@ -1045,10 +1088,6 @@ function frame() {
   const cx = w / 2, cy = h / 2;
 
   const level = Math.max(S.micLevel, S.playLevel);
-  const base = Math.min(w, h) * 0.17;
-  const grow = 1 + level * MOTION.levelGrow;
-  const R = base * grow;
-  const wobbleAmt = MOTION.wobbleBase + level * MOTION.wobbleLevel;
   const dotState = currentDotState();
   updateVisualTarget(dotState, now);
   const progress = visualProgress(now);
@@ -1059,6 +1098,14 @@ function frame() {
   const speakingWeight = stateWeight("speaking", progress);
   const thinkingWeight = stateWeight("thinking", progress);
   const dreamingWeight = stateWeight("dreaming", progress);
+  const asleepW = stateWeight("asleep", progress);
+  // While asleep the blob stops reacting to the mic: no level-driven growth,
+  // wobble, or glow — it sits round and still (eyes closed, z's drifting).
+  const reactLevel = level * (1 - asleepW);
+  const base = Math.min(w, h) * 0.17;
+  const grow = 1 + reactLevel * MOTION.levelGrow;
+  const R = base * grow;
+  const wobbleAmt = (MOTION.wobbleBase + reactLevel * MOTION.wobbleLevel) * (1 - asleepW);
 
   const N = 96;
   c2d.beginPath();
@@ -1080,7 +1127,7 @@ function frame() {
   grad.addColorStop(1, outer);
   c2d.fillStyle = grad;
   c2d.shadowColor = outer;
-  c2d.shadowBlur = 40 * (0.4 + level);
+  c2d.shadowBlur = 40 * (0.4 + reactLevel);
   c2d.fill();
   c2d.shadowBlur = 0;
 
@@ -1094,22 +1141,34 @@ function frame() {
   drawConnectingOrbit(cx, cy, R, t, connectingWeight);
   drawClosedFlicker(cx, cy, R, t, closedWeight);
 
-  // eyes
-  const blink = blinkScale(now);
+  // eyes — open (blinking) when awake; a closed eyelid while asleep
+  const blink = asleepW > 0.5 ? 0 : blinkScale(now);
   const eyeR = R * 0.12;
   const eyeDX = R * 0.34, eyeDY = -R * 0.08;
   for (const side of [-1, 1]) {
     c2d.save();
     c2d.translate(cx + side * eyeDX, cy + eyeDY);
-    c2d.scale(1, Math.max(0.08, blink));
-    c2d.beginPath();
-    c2d.fillStyle = "rgba(10, 10, 16, 0.9)";
-    c2d.arc(0, 0, eyeR, 0, Math.PI * 2);
-    c2d.fill();
-    c2d.beginPath();
-    c2d.fillStyle = "rgba(255, 255, 255, 0.85)";
-    c2d.arc(-eyeR * 0.3, -eyeR * 0.3, eyeR * 0.25, 0, Math.PI * 2);
-    c2d.fill();
+    if (asleepW < 0.98) {
+      c2d.scale(1, Math.max(0.08, blink) * (1 - asleepW));
+      c2d.beginPath();
+      c2d.fillStyle = "rgba(10, 10, 16, 0.9)";
+      c2d.arc(0, 0, eyeR, 0, Math.PI * 2);
+      c2d.fill();
+      c2d.beginPath();
+      c2d.fillStyle = "rgba(255, 255, 255, 0.85)";
+      c2d.arc(-eyeR * 0.3, -eyeR * 0.3, eyeR * 0.25, 0, Math.PI * 2);
+      c2d.fill();
+    }
+    if (asleepW > 0.02) {
+      c2d.globalAlpha = asleepW;
+      c2d.strokeStyle = "rgba(10, 10, 16, 0.9)";
+      c2d.lineWidth = Math.max(2, R * 0.045);
+      c2d.lineCap = "round";
+      c2d.beginPath();
+      c2d.moveTo(-eyeR, -eyeR * 0.1);
+      c2d.quadraticCurveTo(0, eyeR * 0.65, eyeR, -eyeR * 0.1);
+      c2d.stroke();
+    }
     c2d.restore();
   }
 
@@ -1117,6 +1176,7 @@ function frame() {
   drawSpeakingWave(cx, cy, R, t, speakingWeight);
   drawThinkingBubbles(cx, cy, R, t, thinkingWeight);
   drawDreamingZs(cx, cy, R, t, dreamingWeight);
+  drawAsleepZs(cx, cy, R, t, asleepW);
 
   el.meterFill.style.width = `${Math.round(S.micLevel * 100)}%`;
   requestAnimationFrame(frame);
@@ -1528,6 +1588,7 @@ el.btnStart.addEventListener("click", async () => {
 el.btnBarage.addEventListener("click", bargeIn);
 
 el.btnFlush.addEventListener("click", () => sendJson({ type: "flush" }));
+el.btnWake.addEventListener("click", () => sendJson({ type: "wake" }));
 el.btnDream.addEventListener("click", triggerDream);
 
 el.btnClear.addEventListener("click", () => {

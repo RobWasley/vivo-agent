@@ -16,9 +16,10 @@ from fastapi.testclient import TestClient
 
 from app import config, config_schema, main, pipeline
 from app.conversation import SessionStore
+from app.wake import WakeState
 
 ROOT = Path(__file__).resolve().parent.parent
-SECTIONS = ["llm", "persona", "user", "filler", "voice", "stt", "vad", "barge_in", "memory", "agent"]
+SECTIONS = ["llm", "persona", "user", "filler", "voice", "stt", "vad", "barge_in", "wake", "memory", "agent"]
 
 
 @pytest.fixture()
@@ -137,6 +138,7 @@ class _FakeEngines:
         self.tts.voices = lambda: ["af_heart", "am_michael"]
         self.stt = type("S", (), {"language": "en", "beam_size": 1})()
         self.sessions = SessionStore()  # in-memory: no data_dir
+        self.wake = WakeState()  # disabled (no phrase)
 
 
 def _offline_app():
@@ -222,7 +224,7 @@ def test_broadcast_config_reaches_open_sessions(api_env):
         ws = _FakeWS()
         session = asyncio.run_coroutine_threadsafe(_make_session(ws, engines), loop).result(10)
         pipeline._ACTIVE.add(session)  # serve_session does this in production
-        config.BARGE_LEVEL_THRESHOLD = 0.3  # barge_config_msg() reads it live
+        config.BARGE_LEVEL_THRESHOLD = 0.3  # config_msg() reads it live
         pipeline.broadcast_config()
         msg = _wait_for_config(ws)
         assert msg and msg["barge_in"]["level_threshold"] == 0.3

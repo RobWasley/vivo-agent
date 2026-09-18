@@ -4,16 +4,19 @@ A CPU-only, single-container voice agent. Talk to it hands-free through a
 browser: it listens (Silero VAD), transcribes (faster-whisper small int8),
 answers with a small hand-rolled agent pointed at your llama.cpp v1 endpoint
 (shell, file and web tools, named conversation sessions), and speaks back in a
-cloned voice (LuxTTS voice cloning). No GPU, no API keys, one Docker container.
+cloned voice (LuxTTS voice cloning). It can also sit silently *asleep* and
+wake only on its wake phrase — matched on the transcript, no extra model. No
+GPU, no API keys, one Docker container.
 
 ```
 Browser (mic + playback + wobbly dot UI)
    │  WebSocket (PCM 16 kHz up, PCM 48 kHz down)
    ▼
 FastAPI (uvicorn)
-   ├── VAD: Silero v6 → speech endpointing
-   ├── STT: faster-whisper small int8
-    ├── Agent: streaming tool loop → llama.cpp v1 (thinking on)
+    ├── VAD: Silero v6 → speech endpointing
+    ├── STT: faster-whisper small int8
+    ├── Wake: transcript-matched wake phrase (asleep until addressed)
+     ├── Agent: streaming tool loop → llama.cpp v1 (thinking on)
     │     ├── 8 tools: exec, files, web, time, weather
     │     └── spoken fillers ("one moment…") while reasoning
     ├── Memory: named conversation sessions, idle-time LLM compaction
@@ -119,9 +122,9 @@ voice is already warm.
 **Save** POSTs the whole snapshot to `POST /api/config`. The server validates
 it against the schema (a `400` lists every problem), rewrites `vivo.toml` on
 the host (the file is mounted read-write), reloads the config, hot-applies the
-live-applicable values to the running engines, and re-broadcasts the
-`[barge_in]` `config` frame to every open WebSocket so connected browsers
-pick up new barge timings without a reload. Values that need a restart (STT
+live-applicable values to the running engines, and re-broadcasts the `config`
+frame (barge-in timings + wake phrase) to every open WebSocket so connected
+browsers pick up changes without a reload. Values that need a restart (STT
 model/compute/threads) are written but take effect on the next
 `docker compose up`.
 
@@ -178,6 +181,13 @@ max_speech_s = 30.0             # VAD_MAX_SPEECH_S
 level_threshold = 0.25          # BARGE_LEVEL_THRESHOLD
 sustain_ms = 250                # BARGE_SUSTAIN_MS
 cooldown_ms = 700               # BARGE_COOLDOWN_MS
+
+[wake]                          # matched on the STT transcript — no keyword-spotting model
+phrase = "hey vivo"             # WAKE_PHRASE — say this to wake vivo (empty = off, answer everything)
+session_timeout_s = 30          # WAKE_SESSION_TIMEOUT_S — awake-but-quiet this long ⇒ back to sleep
+end_phrases = ["that's all", "goodbye", "go to sleep"]  # WAKE_END_PHRASES (comma-separated)
+ack = "Yes?"                    # WAKE_ACK — spoken after a wake-phrase-only utterance (no LLM call)
+goodnight = "Okay, going quiet."  # WAKE_GOODNIGHT — spoken when a session ends
 
 [memory]
 compact_after_chars = 12000     # COMPACT_AFTER_CHARS (≈ /4 tokens)
@@ -242,6 +252,20 @@ checkpoint message — it never blocks an utterance, and a checkpoint is only
 applied if nothing was appended meanwhile. A pre-sessions
 `./data/conversation.json` is migrated automatically on first start.
 
+**Wake phrase.** With `[wake] phrase` set, vivo starts *asleep*: she keeps
+listening and transcribing, but only an utterance containing the phrase
+(words in order, punctuation/case tolerant) reaches the LLM — everything else
+is dropped silently, so ambient speech can't flood the transcript. A
+wake-phrase-only utterance gets a spoken `ack` (no LLM round trip); the phrase
+plus a request ("hey vivo, what time is it?") speaks the ack, then answers the
+request as usual. While awake, vivo returns to sleep when you say one of
+`end_phrases` or stay quiet for `session_timeout_s` (any exchange restarts
+the clock; it never fires mid-reply) — both ends speak the `goodnight` so
+you know she went quiet. The state is shared by all open connections,
+hot-applied from the settings pane (an empty `phrase` restores the legacy
+always-answer), and the UI shows an *asleep* status with a manual wake button.
+Matching is done on the STT transcript — there is no keyword-spotting model.
+
 ## Voice pipeline
 
 The browser talks to a WebSocket at `ws://<host>:8600/ws`. Per utterance the
@@ -259,19 +283,23 @@ mic record).
 
 - Client sends mic audio as **binary int16 mono 16 kHz** frames (any size).
 - Server streams back JSON events (`session` [first frame — the conversation
-  this connection is bound to], `config`, `start`, `end`, `transcript`,
-   `agent_text` deltas, `tool`, `reply_done`) plus **binary int16 mono
-   48 kHz** TTS audio, one chunk per sentence — first audio starts while the
-  rest of the reply is still being generated. Connect with `/ws?session=<id>`
-  to bind a specific conversation; `/ws` follows the active one.
+  this connection is bound to], `config`, `wake` [awake/asleep state of the
+  shared wake-phrase session, resent on every change], `start`, `end`,
+  `transcript`, `agent_text` deltas, `tool`, `reply_done`) plus **binary
+  int16 mono 48 kHz** TTS audio, one chunk per sentence — first audio starts
+  while the rest of the reply is still being generated. Connect with
+  `/ws?session=<id>` to bind a specific conversation; `/ws` follows the
+  active one.
 - `{"type":"barge_in"}` interrupts the active reply (stops speaking, aborts
   the LLM stream) and frees the mic immediately; a generation token ensures
   the interrupted worker can never send stale audio. `{"type":"session"}`
   starts a new conversation and `{"type":"session","id":…}` switches to an
-  existing one (both also set it active, for other tabs); each is answered
-  with a `session` frame (unknown id → `error`). A switch affects the next
-  utterance only — an in-flight reply keeps the conversation it started in. While a reply is
-  playing, mic input is ignored (echo guard) — except for **auto barge-in**:
+   existing one (both also set it active, for other tabs); each is answered
+   with a `session` frame (unknown id → `error`). `{"type":"wake"}` manually
+   wakes the wake-phrase session (no-op when already awake or disabled). A
+   switch affects the next utterance only — an in-flight reply keeps the
+   conversation it started in. While a reply is playing, mic input is ignored
+   (echo guard) — except for **auto barge-in**:
   the browser watches the mic level and sends `barge_in` on its own when your
   voice (after the browser's echo cancellation) stays above a threshold long
   enough. The timings are not hardcoded: the server pushes its

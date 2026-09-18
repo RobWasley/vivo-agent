@@ -366,6 +366,54 @@ SCHEMA = {
             },
         },
     },
+    "wake": {
+        "title": "Wake phrase",
+        "keys": {
+            "phrase": {
+                "type": "str",
+                "label": "Wake phrase",
+                "help": "Say this to wake vivo: she listens silently for it and ignores everything "
+                        "else, so ambient speech doesn't flood the transcript. Anything after the "
+                        "phrase in the same utterance is answered too. An empty phrase disables the "
+                        "wake word (she answers every utterance).",
+                "apply": "now",
+                "attr": "WAKE_PHRASE",
+            },
+            "session_timeout_s": {
+                "type": "float",
+                "label": "Session timeout (s)",
+                "help": "Once awake, vivo returns to silent listening after you stay quiet this long. "
+                        "Any exchange restarts the clock; it never fires while she is replying.",
+                "apply": "now",
+                "min": 5.0,
+                "max": 600.0,
+                "step": 5.0,
+                "attr": "WAKE_SESSION_TIMEOUT_S",
+            },
+            "end_phrases": {
+                "type": "str[]",
+                "label": "End phrases",
+                "help": "Saying one of these (one per line) ends the session early: vivo confirms and "
+                        "returns to silent listening.",
+                "apply": "now",
+                "attr": "WAKE_END_PHRASES",
+            },
+            "ack": {
+                "type": "str",
+                "label": "Wake acknowledgement",
+                "help": "What vivo says right after the wake phrase when nothing else was said.",
+                "apply": "now",
+                "attr": "WAKE_ACK",
+            },
+            "goodnight": {
+                "type": "str",
+                "label": "Goodnight",
+                "help": "What vivo says when a session ends (timeout or end phrase).",
+                "apply": "now",
+                "attr": "WAKE_GOODNIGHT",
+            },
+        },
+    },
     "memory": {
         "title": "Conversation memory",
         "keys": {

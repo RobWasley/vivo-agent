@@ -82,8 +82,15 @@ async def recv_until(ws, predicate, timeout: float):
     return frames, False
 
 
+async def manual_wake(ws) -> None:
+    """The live config ships with a wake phrase (T024), so wake vivo
+    explicitly instead of saying the phrase in the fixture audio."""
+    await ws.send(json.dumps({"type": "wake"}))
+
+
 async def _utterance_reply(pcm16: np.ndarray) -> None:
     async with websockets.connect(WS_URL, max_size=None) as ws:
+        await manual_wake(ws)
         await send_utterance(ws, pcm16)
         frames, ok = await recv_until(ws, lambda fs: any(ftype(f) == "reply_done" for f in fs), TIMEOUT)
         assert ok, f"no reply_done in {len(frames)} frames: {[ftype(f) for f in frames]}"
@@ -100,6 +107,7 @@ async def _utterance_reply(pcm16: np.ndarray) -> None:
 
 async def _barge_in(pcm16: np.ndarray) -> None:
     async with websockets.connect(WS_URL, max_size=None) as ws:
+        await manual_wake(ws)
         await send_utterance(ws, pcm16)
         frames, ok = await recv_until(
             ws,

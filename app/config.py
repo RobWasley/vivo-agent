@@ -184,6 +184,19 @@ def _emit() -> None:
     g["BARGE_SUSTAIN_MS"] = _get("barge_in", "sustain_ms", "BARGE_SUSTAIN_MS", 250, int)
     g["BARGE_COOLDOWN_MS"] = _get("barge_in", "cooldown_ms", "BARGE_COOLDOWN_MS", 700, int)
 
+    # --- Wake phrase (T024) -------------------------------------------------------
+    # Empty phrase = feature off: every utterance is answered (legacy). While
+    # asleep, only an utterance containing the phrase is processed; an awake
+    # session ends on an end phrase or after session_timeout_s of silence.
+    g["WAKE_PHRASE"] = _get("wake", "phrase", "WAKE_PHRASE", "hey vivo")
+    g["WAKE_SESSION_TIMEOUT_S"] = _get("wake", "session_timeout_s", "WAKE_SESSION_TIMEOUT_S", 30, float)
+    g["WAKE_END_PHRASES"] = _list(
+        "wake", "end_phrases", "WAKE_END_PHRASES",
+        ("that's all", "goodbye", "go to sleep"),
+    )
+    g["WAKE_ACK"] = _get("wake", "ack", "WAKE_ACK", "Yes?")
+    g["WAKE_GOODNIGHT"] = _get("wake", "goodnight", "WAKE_GOODNIGHT", "Okay, going quiet.")
+
     # --- Conversation memory ----------------------------------------------------
     # Compact history once it grows past this many characters (roughly /4 tokens),
     # keeping the most recent N turns verbatim.
@@ -275,6 +288,13 @@ def effective_dict() -> dict:
             "level_threshold": g["BARGE_LEVEL_THRESHOLD"],
             "sustain_ms": g["BARGE_SUSTAIN_MS"],
             "cooldown_ms": g["BARGE_COOLDOWN_MS"],
+        },
+        "wake": {
+            "phrase": g["WAKE_PHRASE"],
+            "session_timeout_s": g["WAKE_SESSION_TIMEOUT_S"],
+            "end_phrases": list(g["WAKE_END_PHRASES"]),
+            "ack": g["WAKE_ACK"],
+            "goodnight": g["WAKE_GOODNIGHT"],
         },
         "memory": {
             "compact_after_chars": g["COMPACT_AFTER_CHARS"],

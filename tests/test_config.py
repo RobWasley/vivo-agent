@@ -114,7 +114,7 @@ exec_timeout_s = 30
     assert cfg.LLM_MAX_TOKENS == 250
     assert cfg.PERSONA == "Custom persona."
     assert cfg.SYSTEM_PROMPT == "Be very brief."
-    assert cfg.USER_NAME == "Rob"
+    assert cfg.USER_NAME == ""
     assert cfg.USER_LOCATION == "Bristol, UK"
     assert cfg.USER_TIMEZONE == "Europe/London"
     assert cfg.USER_UNITS == "imperial"

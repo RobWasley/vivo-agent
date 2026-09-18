@@ -77,7 +77,7 @@ def test_reminder_text_uses_user_name_and_prompt(monkeypatch):
     import app.config as config
     from app.reminders import reminder_message
 
-    monkeypatch.setattr(config, "USER_NAME", "Rob", raising=False)
+    monkeypatch.setattr(config, "USER_NAME", "Alex", raising=False)
 
     msg = reminder_message("take a break")
 
@@ -91,7 +91,7 @@ def test_due_reminder_uses_server_tts(monkeypatch):
 
     import app.config as config
 
-    monkeypatch.setattr(config, "USER_NAME", "Rob", raising=False)
+    monkeypatch.setattr(config, "USER_NAME", "Alex", raising=False)
 
     calls = []
 

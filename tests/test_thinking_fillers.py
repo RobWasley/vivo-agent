@@ -24,6 +24,7 @@ from app import config
 from app.agent import ReasoningDelta
 from app.conversation import SessionStore
 from app.pipeline import Bench, FILLER_PHRASES, ThinkingFiller, VoiceSession
+from app.wake import WakeState
 
 
 class FakeWS:
@@ -95,6 +96,7 @@ def make_engines(agent: ThinkingAgent, tts: FakeTTS):
             tts=tts,
             agent=agent,
             sessions=sessions,
+            wake=WakeState(),  # disabled (no phrase): legacy always-answer behavior
         ),
         conv,
     )

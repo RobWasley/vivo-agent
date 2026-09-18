@@ -87,6 +87,8 @@ import numpy as np
 from app import config, shell, tools
 from app.agent import Agent, ReasoningDelta, ToolRound
 from app.conversation import SessionStore
+from app.memory import MemoryStore, DreamScheduler
+from app.reminders import ReminderScheduler, ReminderStore, get_default_scheduler, reminder_message
 from app.stt import STT
 from app.tts import TTS
 from app.vad import VAD
@@ -128,6 +130,16 @@ def user_profile() -> str:
     if not (name or location or tz or units != "metric"):
         return ""
     return "User profile: " + " ".join(parts)
+
+
+def memory_context(memory: MemoryStore | None = None) -> str:
+    """A compact summary of the local memory file for the model prompt."""
+    if memory is None:
+        memory = MemoryStore(path=os.path.join(config.DATA_DIR, "memory.md"))
+    summary = memory.dream()
+    if summary == "No important memory yet.":
+        return ""
+    return "Local memory: " + summary.replace("\n", " ")
 
 
 class SentenceChunker:
@@ -344,6 +356,17 @@ class Engines:
     """Shared, expensive engine singletons (one per process)."""
 
     def __init__(self) -> None:
+        self.memory = MemoryStore(path=os.path.join(config.DATA_DIR, "memory.md"))
+        self.reminders = ReminderStore(path=os.path.join(config.DATA_DIR, "reminders.json"))
+        self.reminder_scheduler = get_default_scheduler(on_due=self._handle_due_reminder)
+        self.reminders = self.reminder_scheduler.store
+        self.dream_scheduler = DreamScheduler(
+            self.memory,
+            interval_seconds=config.DREAM_INTERVAL_S,
+            on_state=self._handle_dream_state,
+        )
+        self.reminder_scheduler.start()
+        self.dream_scheduler.start()
         self.stt = STT(
             model_size=config.STT_MODEL,
             compute_type=config.STT_COMPUTE_TYPE,
@@ -365,7 +388,7 @@ class Engines:
             thinking=config.LLM_THINKING, max_tokens=config.LLM_MAX_TOKENS,
             max_tool_rounds=config.MAX_TOOL_ROUNDS,
             system_prompt=config.SYSTEM_PROMPT,
-            user_profile=user_profile(),
+            user_profile=user_profile() + ("\n" + memory_context(self.memory) if memory_context(self.memory) else ""),
         )
         self.sessions = SessionStore(
             data_dir=config.DATA_DIR,
@@ -373,7 +396,32 @@ class Engines:
             keep_recent_turns=config.KEEP_RECENT_TURNS,
         )
 
+    def _handle_due_reminder(self, reminder: dict) -> None:
+        text = str(reminder.get("text", "Reminder")).strip()
+        spoken = reminder_message(text)
+        self.memory.observe(f"Reminder fired: {text}")
+        payload = {"type": "reminder", "text": spoken}
+        for session in list(_ACTIVE):
+            if session.closed:
+                continue
+            session.send(payload)
+            try:
+                audio = self.tts.synthesize(spoken)
+            except Exception:  # pragma: no cover - degrade gracefully for reminders
+                log.exception("reminder TTS synthesis failed for %r", spoken)
+                continue
+            if audio.size == 0:
+                continue
+            pcm16 = (np.clip(audio, -1.0, 1.0) * 32767).astype("<i2")
+            session.send(pcm16.tobytes())
+        log.info("reminder fired: %s", spoken)
+
+    def _handle_dream_state(self, active: bool) -> None:
+        broadcast_dream_state(active)
+
     def close(self) -> None:
+        self.reminder_scheduler.stop()
+        self.dream_scheduler.stop()
         self.agent.close()
 
 
@@ -406,6 +454,8 @@ def apply_config(engines: Engines) -> None:
     engines.sessions.set_limits(
         config.COMPACT_AFTER_CHARS, config.KEEP_RECENT_TURNS
     )
+    if hasattr(engines, "dream_scheduler") and config.DREAM_INTERVAL_S > 0:
+        engines.dream_scheduler.interval_seconds = config.DREAM_INTERVAL_S
     shell.MAX_TIMEOUT = config.EXEC_MAX_TIMEOUT  # shell.py snapshots it at import
     FILLER_PHRASES = config.FILLER_PHRASES  # ThinkingFiller reads the module global
 
@@ -603,7 +653,7 @@ def _handle_utterance(
             result = tools.execute(name, args)
             log.info("tool %s -> %s", name, str(result)[:120])
             if session.alive(gen):
-                session.send({"type": "tool", "name": name, "result": str(result)[:300]})
+                session.send({"type": "tool", "name": name, "result": str(result)})
             return result
 
         for item in engines.agent.reply(text, execute, history=history):
@@ -719,6 +769,14 @@ def barge_config_msg() -> dict:
 def broadcast_config() -> None:
     """Re-send the `config` handshake to every open session (T019)."""
     msg = barge_config_msg()
+    for s in list(_ACTIVE):
+        if not s.closed:
+            s.send(msg)
+
+
+def broadcast_dream_state(active: bool) -> None:
+    """Report whether the background dream pass is running."""
+    msg = {"type": "dream", "active": bool(active)}
     for s in list(_ACTIVE):
         if not s.closed:
             s.send(msg)

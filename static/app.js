@@ -33,6 +33,7 @@ const el = {
   btnStart: $("btn-start"),
   btnBarage: $("btn-barage"),
   btnFlush: $("btn-flush"),
+  btnDream: $("btn-dream"),
   btnClear: $("btn-clear"),
   sessionSelect: $("session-select"),
   btnNewSession: $("btn-new-session"),
@@ -67,6 +68,7 @@ const S = {
   bargeCooldownUntil: 0, // suppress auto-barge re-triggers until this time
   dropAudio: false, // ignore in-flight TTS frames after a barge until the next `end`
   ttsSampleRate: DEFAULT_PLAY_RATE,
+  dreaming: false,
   motionPreset: "balanced",
   prefersReducedMotion: false,
   blink: { active: false, startedAt: 0, duration: 0, nextAt: 0, doubleBlink: false },
@@ -328,6 +330,10 @@ function handleServerJson(m) {
         if (Number.isFinite(sr) && sr >= 8000 && sr <= 96000) S.ttsSampleRate = sr;
       }
       return; // config never touches the status UI
+    case "dream":
+      S.dreaming = !!m.active;
+      updateStatus();
+      return;
     case "start":
       setPipeline("listening");
       break;
@@ -342,8 +348,12 @@ function handleServerJson(m) {
     case "agent_text":
       appendAgent(m.delta);
       break;
+    case "reminder":
+      const reminderText = String(m.text || "Reminder");
+      addEntry("hint", `⏰ reminder: ${escapeHtml(reminderText)}`);
+      return;
     case "tool":
-      addEntry("tool", `${m.name} &rarr; ${escapeHtml(String(m.result).slice(0, 120))}`);
+      addToolEntry(m.name, m.result);
       break;
     case "barge_ack":
       S.dropAudio = true;
@@ -379,6 +389,41 @@ function addEntry(cls, html) {
   d.className = `entry entry-${cls}`;
   d.innerHTML = `<span class="who">${cls}</span><p></p>`;
   d.querySelector("p").innerHTML = html;
+  el.transcript.appendChild(d);
+  scrollTranscript();
+  return d;
+}
+
+function addToolEntry(name, result) {
+  const d = document.createElement("details");
+  d.className = "entry entry-tool entry-tool-details";
+
+  const summary = document.createElement("summary");
+  summary.className = "tool-summary";
+
+  const who = document.createElement("span");
+  who.className = "who";
+  who.textContent = "tool";
+  summary.appendChild(who);
+
+  const toolName = document.createElement("span");
+  toolName.className = "tool-name";
+  toolName.textContent = name || "unknown";
+  summary.appendChild(toolName);
+
+  const toolHint = document.createElement("span");
+  toolHint.className = "tool-hint";
+  toolHint.textContent = "click to expand";
+  summary.appendChild(toolHint);
+
+  const body = document.createElement("div");
+  body.className = "tool-body";
+  const pre = document.createElement("pre");
+  pre.textContent = String(result ?? "");
+  body.appendChild(pre);
+
+  d.appendChild(summary);
+  d.appendChild(body);
   el.transcript.appendChild(d);
   scrollTranscript();
   return d;
@@ -547,6 +592,7 @@ function updateStatus() {
   let state, label;
   if (S.wsState === "closed") [state, label] = ["closed", "Disconnected"];
   else if (S.wsState === "connecting") [state, label] = ["connecting", "Connecting…"];
+  else if (S.dreaming) [state, label] = ["dreaming", "Dreaming…"];
   else if (S.play && S.play.sources.size > 0) [state, label] = ["speaking", "Speaking…"];
   else if (S.pipeline === "speaking") [state, label] = ["speaking", "Speaking…"];
   else if (S.pipeline === "listening") [state, label] = ["listening", "Listening…"];
@@ -576,6 +622,7 @@ const STATE_COLORS = {
   idle: ["#67e8f9", "#155e75"],
   listening: ["#86efac", "#15803d"],
   thinking: ["#93c5fd", "#1d4ed8"],
+  dreaming: ["#c4b5fd", "#6d28d9"],
   speaking: ["#fde68a", "#b45309"],
 };
 
@@ -715,6 +762,7 @@ function initMotionControls() {
 
 function currentDotState() {
   if (S.wsState !== "open") return S.wsState;
+  if (S.dreaming) return "dreaming";
   if (S.play && S.play.sources.size > 0) return "speaking";
   return S.pipeline === "idle" ? "idle" : S.pipeline;
 }
@@ -914,6 +962,26 @@ function drawThinkingBubbles(cx, cy, R, time, weight) {
   c2d.restore();
 }
 
+function drawDreamingZs(cx, cy, R, time, weight) {
+  if (weight < 0.02) return;
+  const baseX = cx - R * 0.05;
+  const baseY = cy - R * 1.18;
+  const drift = Math.sin(time * 2.2) * 8;
+  const zzzs = ["z", "zz", "zzz"];
+
+  c2d.save();
+  c2d.font = `${Math.max(14, R * 0.18)}px "Outfit", sans-serif`;
+  c2d.textAlign = "center";
+  c2d.textBaseline = "middle";
+  for (let i = 0; i < zzzs.length; i++) {
+    const ky = baseY - i * (R * 0.12) + drift * (i * 0.2 + 0.2);
+    const kx = baseX + i * (R * 0.1);
+    c2d.fillStyle = `rgba(196, 181, 253, ${(0.45 + 0.35 * Math.sin(time * 2.5 + i)) * weight})`;
+    c2d.fillText(zzzs[i], kx, ky);
+  }
+  c2d.restore();
+}
+
 function drawMouth(cx, cy, R, speakingWeight, thinkingWeight, playLevel, time) {
   const speaking = speakingWeight > 0.03;
   const mouthY = cy + R * 0.33;
@@ -990,6 +1058,7 @@ function frame() {
   const outer = mixHex(fromColors[1], toColors[1], progress);
   const speakingWeight = stateWeight("speaking", progress);
   const thinkingWeight = stateWeight("thinking", progress);
+  const dreamingWeight = stateWeight("dreaming", progress);
 
   const N = 96;
   c2d.beginPath();
@@ -1047,6 +1116,7 @@ function frame() {
   drawMouth(cx, cy, R, speakingWeight, thinkingWeight, S.playLevel, t);
   drawSpeakingWave(cx, cy, R, t, speakingWeight);
   drawThinkingBubbles(cx, cy, R, t, thinkingWeight);
+  drawDreamingZs(cx, cy, R, t, dreamingWeight);
 
   el.meterFill.style.width = `${Math.round(S.micLevel * 100)}%`;
   requestAnimationFrame(frame);
@@ -1077,6 +1147,28 @@ function flashSettingsMsg(text, isError) {
     el.settingsMsg.textContent = "";
     el.settingsMsg.className = "settings-msg";
   }, 3000);
+}
+
+async function triggerDream() {
+  if (!S.ws || S.ws.readyState !== WebSocket.OPEN) {
+    addEntry("error", "server disconnected — dream couldn't start");
+    return;
+  }
+  try {
+    const res = await fetch("/api/dream", { method: "POST" });
+    if (!res.ok) {
+      const j = await res.json().catch(() => ({}));
+      throw new Error((j && j.detail) || `HTTP ${res.status}`);
+    }
+    const j = await res.json();
+    if (j.summary && j.summary !== "No important memory yet.") {
+      addEntry("hint", `dreamed: ${escapeHtml(String(j.summary))}`);
+    } else {
+      addEntry("hint", "dreamed: nothing notable yet");
+    }
+  } catch (err) {
+    addEntry("error", `dream failed: ${escapeHtml(err.message || String(err))}`);
+  }
 }
 
 async function openSettings() {
@@ -1436,6 +1528,7 @@ el.btnStart.addEventListener("click", async () => {
 el.btnBarage.addEventListener("click", bargeIn);
 
 el.btnFlush.addEventListener("click", () => sendJson({ type: "flush" }));
+el.btnDream.addEventListener("click", triggerDream);
 
 el.btnClear.addEventListener("click", () => {
   el.transcript.innerHTML = "";

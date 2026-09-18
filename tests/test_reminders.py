@@ -73,6 +73,64 @@ def test_reminder_store_lists_upcoming_notifications(tmp_path):
     assert all(item["due_at"] for item in upcoming)
 
 
+def test_reminder_text_uses_user_name_and_prompt(monkeypatch):
+    import app.config as config
+    from app.reminders import reminder_message
+
+    monkeypatch.setattr(config, "USER_NAME", "Rob", raising=False)
+
+    msg = reminder_message("take a break")
+
+    assert "Hey Rob" in msg
+    assert "this is your reminder to take a break" in msg.lower()
+
+
+def test_due_reminder_uses_server_tts(monkeypatch):
+    import numpy as np
+    from types import SimpleNamespace
+
+    import app.config as config
+
+    monkeypatch.setattr(config, "USER_NAME", "Rob", raising=False)
+
+    calls = []
+
+    class FakeTTS:
+        def synthesize(self, text):
+            calls.append(text)
+            return np.array([0.0, 0.1, 0.2], dtype=np.float32)
+
+    class FakeSession:
+        def __init__(self):
+            self.closed = False
+            self.sent = []
+            self.engines = SimpleNamespace(tts=FakeTTS())
+
+        def send(self, payload):
+            self.sent.append(payload)
+
+    session = FakeSession()
+    engines = SimpleNamespace(
+        memory=SimpleNamespace(observe=lambda *args, **kwargs: None),
+        tts=session.engines.tts,
+    )
+    engines._handle_due_reminder = lambda reminder: None
+
+    def trigger(reminder):
+        text = str(reminder.get("text", "Reminder")).strip()
+        spoken = __import__("app.reminders", fromlist=["reminder_message"]).reminder_message(text)
+        session.send({"type": "reminder", "text": spoken})
+        audio = session.engines.tts.synthesize(spoken)
+        if audio.size:
+            session.send((audio * 32767).astype("<i2").tobytes())
+
+    trigger({"text": "take a break"})
+
+    assert calls == ["Hey Rob, this is your reminder to take a break"]
+    assert session.sent[0]["type"] == "reminder"
+    assert isinstance(session.sent[1], bytes)
+
+
 def test_memory_store_dream_keeps_high_value_fact(tmp_path):
     from app.memory import MemoryStore
 

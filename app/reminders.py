@@ -10,6 +10,8 @@ from pathlib import Path
 from typing import Any, Callable
 from uuid import uuid4
 
+from app import config
+
 
 DEFAULT_REMINDER_PATH = str(Path(os.environ.get("DATA_DIR", "data")) / "reminders.json")
 
@@ -46,6 +48,17 @@ def get_default_scheduler(on_due: Callable[[dict[str, Any]], None] | None = None
 
 def set_default_on_due(callback: Callable[[dict[str, Any]], None] | None) -> "ReminderScheduler":
     return get_default_scheduler(on_due=callback)
+
+
+def reminder_message(text: str) -> str:
+    """Friendly reminder wording that uses the configured user name when available."""
+    reminder = str(text).strip()
+    if not reminder:
+        reminder = "your reminder"
+    name = config.USER_NAME.strip()
+    if name:
+        return f"Hey {name}, this is your reminder to {reminder}"
+    return f"This is your reminder to {reminder}"
 
 
 def _coerce_datetime(value: str | datetime) -> datetime:

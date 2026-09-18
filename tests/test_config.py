@@ -103,6 +103,7 @@ cooldown_ms = 500
 [memory]
 compact_after_chars = 9999
 keep_recent_turns = 2
+dream_interval_s = 7200
 
 [agent]
 max_tool_rounds = 5
@@ -138,6 +139,7 @@ exec_timeout_s = 30
     assert cfg.BARGE_COOLDOWN_MS == 500
     assert cfg.COMPACT_AFTER_CHARS == 9999
     assert cfg.KEEP_RECENT_TURNS == 2
+    assert cfg.DREAM_INTERVAL_S == 7200
     assert cfg.MAX_TOOL_ROUNDS == 5
     assert cfg.EXEC_TIMEOUT == 30
     # untouched keys keep their defaults

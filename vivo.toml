@@ -97,9 +97,11 @@ cooldown_ms = 700
 [memory]
 # Conversation memory
 # Once the conversation history grows past this, older turns are summarised to keep the context small.
-compact_after_chars = 12000
+dream_interval_s = 3600
 # How many recent turns stay verbatim during compaction.
 keep_recent_turns = 4
+# Once the conversation history grows past this, older turns are summarised to keep the context small.
+compact_after_chars = 12000
 
 [agent]
 # Agent tools

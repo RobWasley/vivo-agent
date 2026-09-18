@@ -390,6 +390,16 @@ SCHEMA = {
                 "step": 1,
                 "attr": "KEEP_RECENT_TURNS",
             },
+            "dream_interval_s": {
+                "type": "int",
+                "label": "Dream interval (s)",
+                "help": "How often the background pass reviews local memory and keeps only high-value facts.",
+                "apply": "now",
+                "min": 60,
+                "max": 86400,
+                "step": 60,
+                "attr": "DREAM_INTERVAL_S",
+            },
         },
     },
     "agent": {

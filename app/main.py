@@ -77,6 +77,14 @@ async def post_config(body: ConfigPayload, request: Request):
     return {"ok": True, "values": config.effective_dict()}
 
 
+@app.post("/api/dream")
+async def trigger_dream(request: Request):
+    """Run an immediate dream pass for the local memory store."""
+    engines = request.app.state.engines
+    summary = await asyncio.to_thread(engines.dream_scheduler.trigger)
+    return {"ok": True, "summary": summary}
+
+
 @app.post("/api/voice")
 async def upload_voice(request: Request, file: UploadFile, name: str = Form("voice")):
     """Store a reference clip as a new voice, make it active, and start

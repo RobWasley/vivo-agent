@@ -168,6 +168,12 @@ body {
   box-shadow: 0 0 10px var(--accent);
 }
 
+.status[data-state="dreaming"] .status-led {
+  background: #a78bfa;
+  box-shadow: 0 0 12px #a78bfa;
+  animation: pulse 1.2s ease-in-out infinite;
+}
+
 .status[data-state="error"] .status-led,
 .status[data-state="closed"] .status-led {
   background: var(--err);
@@ -289,6 +295,79 @@ body {
   border-radius: 12px;
   background: rgba(10, 22, 34, 0.5);
   animation: fadein 200ms ease;
+}
+
+.entry-tool-details {
+  padding: 0;
+  overflow: hidden;
+}
+
+.tool-summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  cursor: pointer;
+  list-style: none;
+}
+
+.tool-summary::before {
+  content: "▸";
+  display: inline-block;
+  width: 1ch;
+  color: var(--accent);
+  font-size: 0.9rem;
+  line-height: 1;
+  transition: transform 120ms ease;
+}
+
+.entry-tool[open] .tool-summary::before {
+  transform: rotate(90deg);
+}
+
+.tool-summary::-webkit-details-marker {
+  display: none;
+}
+
+.tool-summary::marker {
+  content: "";
+}
+
+.tool-name {
+  color: var(--think);
+  font-family: "IBM Plex Mono", "Cascadia Mono", monospace;
+  font-size: 0.83rem;
+  font-weight: 700;
+}
+
+.tool-hint {
+  margin-left: auto;
+  color: var(--muted);
+  font-size: 0.72rem;
+  letter-spacing: 0.3px;
+  text-transform: uppercase;
+}
+
+.entry-tool[open] .tool-hint {
+  color: var(--accent);
+}
+
+.tool-body {
+  padding: 0 12px 12px;
+  border-top: 1px solid rgba(169, 206, 236, 0.12);
+  max-height: min(38vh, 320px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.tool-body pre {
+  margin: 10px 0 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: "IBM Plex Mono", "Cascadia Mono", monospace;
+  font-size: 0.82rem;
+  line-height: 1.45;
+  color: #d4e7ff;
 }
 
 .entry .who {

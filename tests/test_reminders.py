@@ -110,25 +110,26 @@ def test_due_reminder_uses_server_tts(monkeypatch):
             self.sent.append(payload)
 
     session = FakeSession()
-    engines = SimpleNamespace(
+    fake = SimpleNamespace(
         memory=SimpleNamespace(observe=lambda *args, **kwargs: None),
         tts=session.engines.tts,
     )
-    engines._handle_due_reminder = lambda reminder: None
 
     def trigger(reminder):
         text = str(reminder.get("text", "Reminder")).strip()
         spoken = __import__("app.reminders", fromlist=["reminder_message"]).reminder_message(text)
         session.send({"type": "reminder", "text": spoken})
-        audio = session.engines.tts.synthesize(spoken)
+        audio = fake.tts.synthesize(spoken)
         if audio.size:
             session.send((audio * 32767).astype("<i2").tobytes())
+            session.send({"type": "reply_done"})
 
     trigger({"text": "take a break"})
 
     assert calls == ["Hey Rob, this is your reminder to take a break"]
     assert session.sent[0]["type"] == "reminder"
     assert isinstance(session.sent[1], bytes)
+    assert session.sent[2] == {"type": "reply_done"}
 
 
 def test_memory_store_dream_keeps_high_value_fact(tmp_path):

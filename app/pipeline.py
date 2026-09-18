@@ -409,11 +409,14 @@ class Engines:
                 audio = self.tts.synthesize(spoken)
             except Exception:  # pragma: no cover - degrade gracefully for reminders
                 log.exception("reminder TTS synthesis failed for %r", spoken)
+                session.send({"type": "reply_done"})
                 continue
             if audio.size == 0:
+                session.send({"type": "reply_done"})
                 continue
             pcm16 = (np.clip(audio, -1.0, 1.0) * 32767).astype("<i2")
             session.send(pcm16.tobytes())
+            session.send({"type": "reply_done"})
         log.info("reminder fired: %s", spoken)
 
     def _handle_dream_state(self, active: bool) -> None:

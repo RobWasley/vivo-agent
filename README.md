@@ -1,4 +1,4 @@
-# Vivo — the Voice in, Voice out Agent
+# Vivo — CPU-only Voice Agent
 
 A CPU-only, single-container voice assistant. Talk to it hands-free through a browser — no GPU, no API keys, just one Docker container and a running llama.cpp server.
 

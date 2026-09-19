@@ -72,7 +72,7 @@ beam_size = 1
 
 [vad]
 # Voice activity detection
-# Level above which audio counts as speech. Raise it if ambient noise triggers vivo, lower it if she misses quiet speech.
+# Level above which audio counts as speech. Raise it if ambient noise triggers vivo, lower it if it misses quiet speech.
 threshold = 0.5
 # Shortest burst of sound kept as speech; shorter blips are ignored.
 min_speech_ms = 200
@@ -87,18 +87,23 @@ max_speech_s = 30
 
 [barge_in]
 # Barge-in (UI)
-# While vivo is speaking, sustained mic level above this interrupts her. The browser's echo cancellation has already removed her own voice.
+# While vivo is speaking, sustained mic level above this interrupts it. The browser's echo cancellation has already removed its own voice.
 level_threshold = 0.25
 # How long the mic level must stay above the threshold before it interrupts.
 sustain_ms = 250
 # Grace period after a barge-in before another one can trigger.
 cooldown_ms = 700
 
+[ui]
+# UI display
+# How long vivo's caption stays on screen after the last word of a message. Each new message (filler, acknowledgement, answer part) replaces it.
+caption_linger_s = 22
+
 [wake]
 # Wake phrase
-# Say this to wake vivo: she listens silently for it and ignores everything else, so ambient speech doesn't flood the transcript. Anything after the phrase in the same utterance is answered too. An empty phrase disables the wake word (she answers every utterance).
+# Say this to wake vivo: it listens silently for it and ignores everything else, so ambient speech doesn't flood the transcript. Anything after the phrase in the same utterance is answered too. An empty phrase disables the wake word (it answers every utterance).
 phrase = "hey vivo"
-# Once awake, vivo returns to silent listening after you stay quiet this long. Any exchange restarts the clock; it never fires while she is replying.
+# Once awake, vivo returns to silent listening after you stay quiet this long. Any exchange restarts the clock; it never fires while it is replying.
 session_timeout_s = 300
 # Saying one of these (one per line) ends the session early: vivo confirms and returns to silent listening.
 end_phrases = ["that's all", "goodbye", "go to sleep", "we're done", "we are done"]

@@ -160,8 +160,12 @@ def test_no_filler_when_answer_starts_quickly(monkeypatch):
     assert filler_calls(tts) == []
     assert answer_calls(tts) == ["Quick answer."]
     assert ws.audio_frames() == 1
-    # reasoning is never spoken, never sent, never stored
-    assert "".join(e["delta"] for e in ws.texts("agent_text")) == "Quick answer. "
+    # reasoning is never spoken, never sent, never stored; the whole answer
+    # is one message (a single start frame, no filler)
+    frames = ws.texts("agent_text")
+    assert [e["delta"] for e in frames] == ["Quick answer. "]
+    assert frames[0]["start"] is True
+    assert not any(e.get("filler") for e in frames)
     assert conv.turns == [("hello there", "Quick answer.")]
 
 
@@ -186,8 +190,16 @@ def test_filler_spoken_while_model_thinks(monkeypatch):
     assert tts.calls[0] in FILLER_PHRASES
     assert answer_calls(tts) == ["The answer is forty."]
     assert ws.audio_frames() == 2
-    # reasoning never reaches the client or the conversation memory
-    assert "".join(e["delta"] for e in ws.texts("agent_text")) == "The answer is forty. "
+    # reasoning never reaches the client or the conversation memory; the
+    # filler and the answer are separate messages (their own start frames)
+    frames = ws.texts("agent_text")
+    filler_frames = [e for e in frames if e.get("filler")]
+    answer_frames = [e for e in frames if not e.get("filler")]
+    assert len(filler_frames) == 1
+    assert filler_frames[0]["delta"] in FILLER_PHRASES
+    assert filler_frames[0]["start"] is True
+    assert answer_frames[0]["start"] is True
+    assert "".join(e["delta"] for e in answer_frames) == "The answer is forty. "
     assert conv.turns == [("hello there", "The answer is forty.")]
 
 
@@ -246,7 +258,7 @@ def test_scheduler_suppressed_by_steady_text(monkeypatch):
     """Continuous speakable deltas keep the silence below FIRST_AFTER."""
     monkeypatch.setattr(config, "THINK_FILLER_FIRST_AFTER", 0.25)
     monkeypatch.setattr(config, "THINK_FILLER_INTERVAL", 5.0)
-    session = SimpleNamespace(alive=lambda gen: True)
+    session = SimpleNamespace(alive=lambda gen: True, send=lambda payload: None)
     q: "queue.Queue" = queue.Queue(maxsize=8)
     f = ThinkingFiller(session, 1, q, Bench(time.monotonic()))
     f.start()
@@ -261,7 +273,7 @@ def test_scheduler_suppressed_by_steady_text(monkeypatch):
 def test_scheduler_repeats_during_pure_silence(monkeypatch):
     monkeypatch.setattr(config, "THINK_FILLER_FIRST_AFTER", 0.2)
     monkeypatch.setattr(config, "THINK_FILLER_INTERVAL", 0.4)
-    session = SimpleNamespace(alive=lambda gen: True)
+    session = SimpleNamespace(alive=lambda gen: True, send=lambda payload: None)
     q: "queue.Queue" = queue.Queue(maxsize=8)
     f = ThinkingFiller(session, 1, q, Bench(time.monotonic()))
     f.start()
@@ -275,7 +287,7 @@ def test_scheduler_repeats_during_pure_silence(monkeypatch):
 def test_filler_skips_when_queue_is_full(monkeypatch):
     monkeypatch.setattr(config, "THINK_FILLER_FIRST_AFTER", 0.05)
     monkeypatch.setattr(config, "THINK_FILLER_INTERVAL", 0.1)
-    session = SimpleNamespace(alive=lambda gen: True)
+    session = SimpleNamespace(alive=lambda gen: True, send=lambda payload: None)
     q: "queue.Queue" = queue.Queue(maxsize=1)
     q.put((0, "busy", "tts"))
     f = ThinkingFiller(session, 1, q, Bench(time.monotonic()))
@@ -285,3 +297,36 @@ def test_filler_skips_when_queue_is_full(monkeypatch):
     assert f.count == 0
     assert q.qsize() == 1
     assert _drain(q)[0][1] == "busy"
+
+
+def test_wake_ack_and_reply_are_separate_messages(monkeypatch):
+    """The wake ack and the LLM reply stream as separate messages: each
+    begins with a start frame (a new transcript line + caption reset)."""
+    monkeypatch.setattr(config, "THINK_FILLER_FIRST_AFTER", 5.0)
+    monkeypatch.setattr(config, "THINK_FILLER_INTERVAL", 5.0)
+    tts = FakeTTS()
+    agent = ThinkingAgent(think_secs=0.05, answer=["Here is the answer. "])
+    sessions = SessionStore()
+    conv = sessions.conversation_for(sessions.active_id)
+    engines = SimpleNamespace(
+        stt=SimpleNamespace(transcribe=lambda samples: "hey vivo what time is it"),
+        tts=tts,
+        agent=agent,
+        sessions=sessions,
+        wake=WakeState("hey vivo", ("goodbye",), 30.0),
+    )
+    ws = FakeWS()
+
+    async def go() -> None:
+        session = VoiceSession(ws, engines)
+        start(session)
+        await wait_event(ws, "reply_done")
+
+    asyncio.run(go())
+    frames = ws.texts("agent_text")
+    assert [e["delta"] for e in frames] == [config.WAKE_ACK, "Here is the answer. "]
+    assert all(e["start"] is True for e in frames)
+    assert not any(e.get("filler") for e in frames)
+    # conversation memory keeps the combined answer as one turn
+    assert conv.turns == [("hey vivo what time is it", config.WAKE_ACK + "Here is the answer.")]
+    assert engines.wake.active

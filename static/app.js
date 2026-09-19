@@ -5,6 +5,9 @@
  *                      {"type":"barge_in"|"flush"|"wake"|"ping"|{"type":"session"[,"id":str]}}
  *   server -> client : JSON start|end|transcript|agent_text|tool|barge_ack|reply_done|error|session|config|wake
  *                      + binary int16 mono TTS chunks (one per sentence; sample rate via config.audio.tts_sample_rate)
+ *                      agent_text deltas may carry start (first delta of a new
+ *                      message -> new transcript entry + caption reset) and
+ *                      filler (thinking filler phrase -> muted transcript line)
  */
 "use strict";
 
@@ -26,10 +29,14 @@ const BARGE_DEFAULTS = {
 const $ = (id) => document.getElementById(id);
 const el = {
   canvas: $("dot"),
-  status: $("status"),
-  statusLabel: $("status-label"),
+  caption: $("caption"),
   meterFill: $("meter-fill"),
   transcript: $("transcript"),
+  transcriptToggle: $("transcript-toggle"),
+  transcriptPanel: $("transcript-panel"),
+  transcriptClose: $("transcript-close"),
+  sidenav: $("sidenav"),
+  navToggle: $("nav-toggle"),
   btnStart: $("btn-start"),
   btnBarage: $("btn-barage"),
   btnFlush: $("btn-flush"),
@@ -49,6 +56,11 @@ const el = {
   btnSettingsClose: $("btn-settings-close"),
   btnSettingsX: $("btn-settings-x"),
   hint: $("hint"),
+  telUplink: $("tel-uplink"),
+  telPipeline: $("tel-pipeline"),
+  telMic: $("tel-mic"),
+  telWake: $("tel-wake"),
+  telSession: $("tel-session"),
 };
 
 const S = {
@@ -63,6 +75,9 @@ const S = {
   micLevel: 0,
   playLevel: 0,
   currentVivoEntry: null,
+  captionText: "",
+  captionTimer: null,
+  captionLingerMs: 8000, // overridden by the server's `config` message (vivo.toml [ui])
   pingTimer: null,
   bargeCfg: { ...BARGE_DEFAULTS }, // overridden by the server's `config` message
   bargePendingSince: null, // timestamp mic level started sustaining above threshold
@@ -75,7 +90,6 @@ const S = {
   wakePhrase: "", // the configured phrase, for the UI
   motionPreset: "balanced",
   prefersReducedMotion: false,
-  blink: { active: false, startedAt: 0, duration: 0, nextAt: 0, doubleBlink: false },
   hydrateToken: 0,
   sessionsById: {},
 };
@@ -134,7 +148,10 @@ function setWsState(s) {
 
 function setPipeline(s) {
   S.pipeline = s;
-  if (s === "listening" || s === "thinking") S.currentVivoEntry = null;
+  if (s === "listening" || s === "thinking") {
+    S.currentVivoEntry = null;
+    S.captionText = "";
+  }
   updateStatus();
 }
 
@@ -182,8 +199,11 @@ async function startMic() {
   await ctx.resume();
   S.mic = { stream, ctx, source, proc };
   S.micActive = true;
-  el.btnStart.textContent = "stop";
   el.btnStart.classList.add("active");
+  el.btnStart.title = "Stop microphone";
+  el.btnStart.setAttribute("aria-label", "Stop microphone");
+  const lbl = el.btnStart.querySelector(".nav-label");
+  if (lbl) lbl.textContent = "Stop";
   updateWakeUi();
 }
 
@@ -197,8 +217,11 @@ function stopMic() {
   S.mic = null;
   S.micActive = false;
   S.micLevelTarget = 0;
-  el.btnStart.textContent = "start";
   el.btnStart.classList.remove("active");
+  el.btnStart.title = "Start microphone";
+  el.btnStart.setAttribute("aria-label", "Start microphone");
+  const lbl = el.btnStart.querySelector(".nav-label");
+  if (lbl) lbl.textContent = "Start";
   updateHint();
   updateStatus();
 }
@@ -332,6 +355,10 @@ function handleServerJson(m) {
         const sr = Number(m.audio.tts_sample_rate);
         if (Number.isFinite(sr) && sr >= 8000 && sr <= 96000) S.ttsSampleRate = sr;
       }
+      if (m.ui) {
+        const linger = Number(m.ui.caption_linger_s);
+        if (Number.isFinite(linger) && linger > 0) S.captionLingerMs = linger * 1000;
+      }
       if (m.wake) {
         S.wakePhrase = String(m.wake.phrase ?? "");
         S.wakeEnabled = S.wakePhrase.trim() !== "";
@@ -360,7 +387,7 @@ function handleServerJson(m) {
       setPipeline("thinking");
       break;
     case "agent_text":
-      appendAgent(m.delta);
+      appendAgent(m.delta, !!m.start, !!m.filler);
       break;
     case "reminder":
       const reminderText = String(m.text || "Reminder");
@@ -372,6 +399,7 @@ function handleServerJson(m) {
     case "barge_ack":
       S.dropAudio = true;
       stopPlayback(); // belt-and-braces: barge may not have come from our button
+      hideCaption();
       setPipeline("idle");
       break;
     case "reply_done":
@@ -386,6 +414,7 @@ function handleServerJson(m) {
       // conversation this tab is bound to
       rememberSession(m.id);
       el.sessionSelect.disabled = false;
+      updateSessionTelemetry(m.id);
       loadSessions().then(() => {
         el.sessionSelect.value = m.id;
       });
@@ -398,10 +427,16 @@ function handleServerJson(m) {
   updateStatus();
 }
 
-function addEntry(cls, html) {
+function tsNow() {
+  const d = new Date();
+  const p = (n) => String(n).padStart(2, "0");
+  return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+}
+
+function addEntry(cls, html, time) {
   const d = document.createElement("div");
   d.className = `entry entry-${cls}`;
-  d.innerHTML = `<span class="who">${cls}</span><p></p>`;
+  d.innerHTML = `<span class="t">${time || tsNow()}</span><span class="who">${cls}</span><p></p>`;
   d.querySelector("p").innerHTML = html;
   el.transcript.appendChild(d);
   scrollTranscript();
@@ -414,6 +449,11 @@ function addToolEntry(name, result) {
 
   const summary = document.createElement("summary");
   summary.className = "tool-summary";
+
+  const ts = document.createElement("span");
+  ts.className = "t";
+  ts.textContent = tsNow();
+  summary.appendChild(ts);
 
   const who = document.createElement("span");
   who.className = "who";
@@ -443,21 +483,37 @@ function addToolEntry(name, result) {
   return d;
 }
 
-function appendAgent(delta) {
+function appendAgent(delta, start, filler) {
   let entry = S.currentVivoEntry;
-  if (!entry) {
+  if (start || !entry) {
     entry = document.createElement("div");
-    entry.className = "entry entry-vivo";
-    entry.innerHTML = `<span class="who">vivo</span><p></p>`;
+    entry.className = "entry entry-vivo" + (filler ? " entry-filler" : "");
+    entry.innerHTML = `<span class="t">${tsNow()}</span><span class="who">vivo</span><p></p>`;
     el.transcript.appendChild(entry);
     S.currentVivoEntry = entry;
+    S.captionText = ""; // the caption shows only the latest message
   }
   entry.querySelector("p").textContent += delta;
+  S.captionText += delta;
+  el.caption.textContent = S.captionText;
+  el.caption.classList.add("show");
+  if (S.captionTimer) clearTimeout(S.captionTimer);
+  S.captionTimer = setTimeout(() => el.caption.classList.remove("show"), S.captionLingerMs);
   scrollTranscript();
+}
+
+function hideCaption() {
+  if (S.captionTimer) clearTimeout(S.captionTimer);
+  S.captionTimer = null;
+  S.captionText = "";
+  el.caption.classList.remove("show");
 }
 
 function scrollTranscript() {
   el.transcript.scrollTop = el.transcript.scrollHeight;
+  if (!document.body.classList.contains("transcript-open")) {
+    el.transcriptToggle.classList.add("has-new");
+  }
 }
 
 function escapeHtml(s) {
@@ -480,12 +536,13 @@ async function hydrateTranscript(sessionId) {
   el.transcript.innerHTML = "";
   S.currentVivoEntry = null;
 
+  // the server stores no per-turn timestamps: mark hydrated turns accordingly
   if (j.summary) {
-    addEntry("hint", `Earlier summary: ${escapeHtml(String(j.summary))}`);
+    addEntry("hint", `Earlier summary: ${escapeHtml(String(j.summary))}`, "&middot;&middot;&middot;");
   }
   for (const turn of j.turns || []) {
-    if (turn.user) addEntry("you", escapeHtml(String(turn.user)));
-    if (turn.assistant) addEntry("vivo", escapeHtml(String(turn.assistant)));
+    if (turn.user) addEntry("you", escapeHtml(String(turn.user)), "&middot;&middot;&middot;");
+    if (turn.assistant) addEntry("vivo", escapeHtml(String(turn.assistant)), "&middot;&middot;&middot;");
   }
 }
 
@@ -503,6 +560,17 @@ function formatSessionId(id) {
   if (!m) return id;
   const label = `${MONTHS[Number(m[2]) - 1]} ${m[3]} ${m[4]}:${m[5]}`;
   return m[6] ? `${label}${m[6]}` : label;
+}
+
+function updateSessionTelemetry(id) {
+  if (!id) {
+    el.telSession.textContent = "—";
+    return;
+  }
+  const meta = S.sessionsById[id];
+  const name = meta && (meta.name || "").trim();
+  el.telSession.textContent = name || formatSessionId(id);
+  el.telSession.title = el.telSession.textContent;
 }
 
 async function loadSessions() {
@@ -529,6 +597,7 @@ async function loadSessions() {
   if (!known) S.sessionId = j.active; // remembered session vanished: follow the server
   if (S.sessionId) sel.value = S.sessionId;
   sel.disabled = false;
+  updateSessionTelemetry(S.sessionId);
 }
 
 async function renameSelectedSession() {
@@ -603,24 +672,27 @@ async function deleteSelectedSession() {
 /* ---------------- status ---------------- */
 
 function updateStatus() {
-  let state, label;
-  if (S.wsState === "closed") [state, label] = ["closed", "Disconnected"];
-  else if (S.wsState === "connecting") [state, label] = ["connecting", "Connecting…"];
-  else if (S.dreaming) [state, label] = ["dreaming", "Dreaming…"];
-  else if (S.play && S.play.sources.size > 0) [state, label] = ["speaking", "Speaking…"];
-  else if (S.pipeline === "speaking") [state, label] = ["speaking", "Speaking…"];
-  else if (S.pipeline === "listening") [state, label] = ["listening", "Listening…"];
-  else if (S.pipeline === "thinking") [state, label] = ["thinking", "Thinking…"];
-  else if (S.micActive && S.wakeEnabled && !S.wakeActive)
-    [state, label] = ["asleep", `Asleep &mdash; say &ldquo;${escapeHtml(S.wakePhrase)}&rdquo;`];
-  else [state, label] = S.micActive ? ["ready", "Ready"] : ["ready", "Ready &mdash; mic off"];
+  let state;
+  if (S.wsState === "closed") state = "closed";
+  else if (S.wsState === "connecting") state = "connecting";
+  else if (S.dreaming) state = "dreaming";
+  else if (S.play && S.play.sources.size > 0) state = "speaking";
+  else if (S.pipeline === "speaking") state = "speaking";
+  else if (S.pipeline === "listening") state = "listening";
+  else if (S.pipeline === "thinking") state = "thinking";
+  else if (S.micActive && S.wakeEnabled && !S.wakeActive) state = "asleep";
+  else state = "ready";
 
-  el.status.dataset.state = state;
-  el.statusLabel.innerHTML = label;
+  el.telPipeline.dataset.state = state;
+  el.telPipeline.textContent = state;
+  el.telUplink.dataset.state = S.wsState;
+  el.telUplink.textContent = S.wsState;
 }
 
 function updateWakeUi() {
   el.btnWake.disabled = !(S.wakeEnabled && !S.wakeActive);
+  el.telWake.textContent = S.wakeActive ? "awake" : S.wakeEnabled ? S.wakePhrase : "standby";
+  el.telWake.title = el.telWake.textContent;
   updateHint();
   updateStatus();
 }
@@ -636,11 +708,19 @@ function updateHint() {
   }
 }
 
-/* ---------------- the dot ---------------- */
+/* ---------------- the core ring ----------------
+ * A neon ring that reacts to the mic and playback levels: a breathing main
+ * ring with a rotating gap and leading-edge tip, three orbiting segments,
+ * an outer tick ring, a counter-rotating inner dash, and a soft glowing core.
+ * State-specific overlays: ripples (listening), orbiting dots (thinking),
+ * radial wave (speaking), drifting particles (dreaming), dimmed breath
+ * (asleep), dashed spinner (connecting), broken flicker (closed).
+ */
 
 const canvas = el.canvas;
 const c2d = canvas.getContext("2d");
 let t = 0;
+let telTick = 0;
 
 function resizeCanvas() {
   const dpr = window.devicePixelRatio || 1;
@@ -649,80 +729,8 @@ function resizeCanvas() {
   canvas.height = Math.max(1, Math.floor(rect.height * dpr));
 }
 
-const STATE_COLORS = {
-  connecting: ["#94a3b8", "#475569"],
-  closed: ["#f87171", "#7f1d1d"],
-  idle: ["#67e8f9", "#155e75"],
-  listening: ["#86efac", "#15803d"],
-  thinking: ["#93c5fd", "#1d4ed8"],
-  dreaming: ["#c4b5fd", "#6d28d9"],
-  speaking: ["#fde68a", "#b45309"],
-  asleep: ["#64748b", "#1e293b"],
-};
-
-const MOTION_PRESETS = {
-  calm: {
-    levelGrow: 0.35,
-    wobbleBase: 0.02,
-    wobbleLevel: 0.11,
-    bubbleDrift: 0.014,
-    mouthOpenBase: 0.045,
-    mouthOpenLevel: 0.12,
-    mouthJitter: 0.006,
-  },
-  balanced: {
-    levelGrow: 0.55,
-    wobbleBase: 0.03,
-    wobbleLevel: 0.16,
-    bubbleDrift: 0.022,
-    mouthOpenBase: 0.06,
-    mouthOpenLevel: 0.17,
-    mouthJitter: 0.009,
-  },
-  expressive: {
-    levelGrow: 0.75,
-    wobbleBase: 0.045,
-    wobbleLevel: 0.24,
-    bubbleDrift: 0.033,
-    mouthOpenBase: 0.08,
-    mouthOpenLevel: 0.23,
-    mouthJitter: 0.013,
-  },
-};
-
-const MOTION = { ...MOTION_PRESETS.balanced };
-const VISUAL_TRANSITION_MS = 260;
-const BLINK = {
-  gapMinMs: 2600,
-  gapMaxMs: 7800,
-  durationMinMs: 150,
-  durationMaxMs: 240,
-  closedHoldMinMs: 30,
-  closedHoldMaxMs: 70,
-  doubleChance: 0.18,
-  doubleGapMinMs: 140,
-  doubleGapMaxMs: 260,
-};
-const visual = {
-  from: "idle",
-  to: "idle",
-  startedAt: performance.now(),
-};
-
-function clamp01(v) {
-  return Math.max(0, Math.min(1, v));
-}
-
-function randRange(min, max) {
-  return min + Math.random() * (max - min);
-}
-
-function lerp(a, b, t) {
-  return a + (b - a) * t;
-}
-
-function hexToRgb(hex) {
-  const h = hex.replace("#", "");
+function rgbOf(hex) {
+  const h = hex.slice(1);
   return {
     r: parseInt(h.slice(0, 2), 16),
     g: parseInt(h.slice(2, 4), 16),
@@ -730,13 +738,43 @@ function hexToRgb(hex) {
   };
 }
 
-function mixHex(a, b, t) {
-  const aa = hexToRgb(a);
-  const bb = hexToRgb(b);
-  const r = Math.round(lerp(aa.r, bb.r, t));
-  const g = Math.round(lerp(aa.g, bb.g, t));
-  const bl = Math.round(lerp(aa.b, bb.b, t));
-  return `rgb(${r}, ${g}, ${bl})`;
+const STATE_COLORS = {
+  connecting: [rgbOf("#9db2cf"), rgbOf("#26344e")],
+  closed: [rgbOf("#ff5566"), rgbOf("#3c0d14")],
+  idle: [rgbOf("#38bdf8"), rgbOf("#0c3f56")],
+  listening: [rgbOf("#34d399"), rgbOf("#0a4430")],
+  thinking: [rgbOf("#60a5fa"), rgbOf("#173263")],
+  dreaming: [rgbOf("#a78bfa"), rgbOf("#2c2154")],
+  speaking: [rgbOf("#fbbf24"), rgbOf("#5a3c0c")],
+  asleep: [rgbOf("#5b6b80"), rgbOf("#161d29")],
+};
+
+const MOTION_PRESETS = {
+  calm: { speed: 0.6, glow: 0.65, ripple: 0.55, orbit: 0.55 },
+  balanced: { speed: 1, glow: 1, ripple: 1, orbit: 1 },
+  expressive: { speed: 1.5, glow: 1.4, ripple: 1.5, orbit: 1.5 },
+};
+
+const MOTION = { ...MOTION_PRESETS.balanced };
+const VISUAL_TRANSITION_MS = 260;
+const visual = { from: "idle", to: "idle", startedAt: performance.now() };
+
+function clamp01(v) {
+  return Math.max(0, Math.min(1, v));
+}
+
+function lerp(a, b, t) {
+  return a + (b - a) * t;
+}
+
+function mixRgb(a, b, t) {
+  return { r: lerp(a.r, b.r, t), g: lerp(a.g, b.g, t), b: lerp(a.b, b.b, t) };
+}
+
+function rgba(c, a) {
+  const clamped = a > 1 ? 1 : a;
+  if (clamped <= 0) return "rgba(0, 0, 0, 0)";
+  return `rgba(${Math.round(c.r)}, ${Math.round(c.g)}, ${Math.round(c.b)}, ${clamped})`;
 }
 
 function visualProgress(now) {
@@ -807,376 +845,293 @@ function smoothLevel(prev, target) {
   return prev + (target - prev) * coef;
 }
 
-function resetBlinkSchedule(now = performance.now()) {
-  S.blink.active = false;
-  S.blink.startedAt = 0;
-  S.blink.duration = 0;
-  S.blink.closedHold = 0;
-  S.blink.doubleBlink = false;
-  S.blink.nextAt = now + randRange(BLINK.gapMinMs, BLINK.gapMaxMs);
-}
+/* ---------------- draw primitives ---------------- */
 
-function blinkScale(now) {
-  const blink = S.blink;
-  if (!blink.nextAt) resetBlinkSchedule(now);
-
-  if (!blink.active && now >= blink.nextAt) {
-    blink.active = true;
-    blink.startedAt = now;
-    blink.duration = randRange(BLINK.durationMinMs, BLINK.durationMaxMs);
-    blink.closedHold = randRange(BLINK.closedHoldMinMs, BLINK.closedHoldMaxMs);
-    blink.doubleBlink = Math.random() < BLINK.doubleChance;
-  }
-
-  if (!blink.active) return 1;
-
-  const elapsed = now - blink.startedAt;
-  const closeDur = blink.duration * 0.42;
-  const openDur = blink.duration * 0.58;
-  let scale = 1;
-
-  if (elapsed < closeDur) {
-    const p = clamp01(elapsed / closeDur);
-    const eased = 1 - Math.cos((Math.PI * p) / 2);
-    scale = 1 - 0.92 * eased;
-  } else if (elapsed < closeDur + blink.closedHold) {
-    scale = 0.08;
-  } else if (elapsed < blink.duration) {
-    const p = clamp01((elapsed - closeDur - blink.closedHold) / openDur);
-    const eased = Math.sin((Math.PI * p) / 2);
-    scale = 0.08 + 0.92 * eased;
-  }
-
-  if (elapsed >= blink.duration) {
-    if (blink.doubleBlink) {
-      blink.active = false;
-      blink.startedAt = 0;
-      blink.duration = 0;
-      blink.closedHold = 0;
-      blink.doubleBlink = false;
-      blink.nextAt = now + randRange(BLINK.doubleGapMinMs, BLINK.doubleGapMaxMs);
-    } else {
-      resetBlinkSchedule(now);
-    }
-  }
-
-  return scale;
-}
-
-function drawIdleBreath(cx, cy, R, time, weight) {
-  if (weight < 0.02) return;
-  const pulse = 0.5 + 0.5 * Math.sin(time * 1.05);
-  const scale = 1 + 0.018 * pulse * weight;
-  const glow = 0.06 + 0.08 * pulse * weight;
-
+function ringArc(cx, cy, r, a0, a1, color, width, alpha, glowR = 0) {
+  if (alpha <= 0.004) return;
   c2d.save();
-  c2d.globalAlpha = glow;
-  c2d.strokeStyle = "rgba(255, 255, 255, 0.9)";
-  c2d.lineWidth = Math.max(1.5, R * 0.02);
+  c2d.globalAlpha = Math.min(1, alpha);
+  c2d.strokeStyle = color;
+  c2d.lineWidth = width;
+  c2d.lineCap = "round";
+  if (glowR > 0) { c2d.shadowColor = color; c2d.shadowBlur = glowR; }
   c2d.beginPath();
-  c2d.arc(cx, cy, R * scale * 0.82, 0, Math.PI * 2);
-  c2d.stroke();
-  c2d.globalAlpha = glow * 0.7;
-  c2d.beginPath();
-  c2d.arc(cx, cy, R * scale * 0.64, 0, Math.PI * 2);
+  c2d.arc(cx, cy, r, a0, a1);
   c2d.stroke();
   c2d.restore();
 }
 
-function drawListeningRings(cx, cy, R, time, weight) {
-  if (weight < 0.02) return;
-  const pulse = 0.5 + 0.5 * Math.sin(time * 2.2);
-  const spin = time * 1.25;
-  const rings = [0.84, 1.04];
-
+function glowDot(x, y, r, color, alpha, glowR = 0) {
+  if (alpha <= 0.004 || r <= 0) return;
   c2d.save();
+  c2d.globalAlpha = Math.min(1, alpha);
+  c2d.fillStyle = color;
+  if (glowR > 0) { c2d.shadowColor = color; c2d.shadowBlur = glowR; }
+  c2d.beginPath();
+  c2d.arc(x, y, r, 0, Math.PI * 2);
+  c2d.fill();
+  c2d.restore();
+}
+
+/* ---------------- base stack ---------------- */
+
+function drawTicks(cx, cy, R, time, color, weight, level) {
+  if (weight < 0.02) return;
+  const rot = time * 0.12 * MOTION.orbit;
+  const n = 72;
+  const r0 = R * 1.24;
+  const baseA = (0.09 + 0.28 * level) * weight;
+  c2d.save();
+  c2d.strokeStyle = rgba(color, 1);
   c2d.lineCap = "round";
-  c2d.lineWidth = Math.max(1.6, R * 0.018);
-  for (let i = 0; i < rings.length; i++) {
-    const rr = R * rings[i];
-    const start = spin + i * 0.95;
-    const span = Math.PI * (0.5 + 0.14 * pulse);
-    c2d.strokeStyle = `rgba(102, 255, 190, ${0.15 + 0.12 * weight})`;
+  for (let i = 0; i < n; i++) {
+    const major = i % 6 === 0;
+    const a = rot + (i / n) * Math.PI * 2;
+    const len = major ? R * 0.075 : R * 0.032;
+    c2d.globalAlpha = major ? Math.min(1, baseA * 1.6) : baseA;
+    c2d.lineWidth = major ? 2 : 1;
     c2d.beginPath();
-    c2d.arc(cx, cy, rr, start, start + span);
+    c2d.moveTo(cx + Math.cos(a) * r0, cy + Math.sin(a) * r0);
+    c2d.lineTo(cx + Math.cos(a) * (r0 + len), cy + Math.sin(a) * (r0 + len));
     c2d.stroke();
   }
+  c2d.restore();
+}
 
-  const dots = [
-    { a: spin * 0.9, r: R * 1.08 },
-    { a: spin * 0.9 + 2.1, r: R * 1.08 },
-  ];
-  for (const dot of dots) {
-    const x = cx + Math.cos(dot.a) * dot.r;
-    const y = cy + Math.sin(dot.a) * dot.r;
+function drawOrbit(cx, cy, R, time, color, weight, level) {
+  if (weight < 0.02) return;
+  const r = R * 1.1;
+  const rot = time * 0.55 * MOTION.orbit;
+  const span = 1.05 + 0.3 * level;
+  c2d.save();
+  c2d.lineCap = "round";
+  c2d.strokeStyle = rgba(color, 1);
+  c2d.lineWidth = Math.max(1.5, R * 0.014);
+  c2d.shadowColor = rgba(color, 1);
+  for (let i = 0; i < 3; i++) {
+    const a0 = rot + i * (Math.PI * 2 / 3);
+    c2d.globalAlpha = (0.26 + 0.34 * level) * weight;
+    c2d.shadowBlur = R * 0.1 * MOTION.glow * (0.4 + level);
     c2d.beginPath();
-    c2d.fillStyle = `rgba(176, 255, 225, ${(0.12 + 0.12 * pulse) * weight})`;
-    c2d.arc(x, y, Math.max(1.4, R * 0.028), 0, Math.PI * 2);
-    c2d.fill();
+    c2d.arc(cx, cy, r, a0, a0 + span);
+    c2d.stroke();
   }
   c2d.restore();
 }
 
-function drawConnectingOrbit(cx, cy, R, time, weight) {
+function drawMainRing(cx, cy, R, time, color, weight, level, speakingW) {
   if (weight < 0.02) return;
-  const spin = time * 1.8;
-  const orbit = R * 1.08;
-  const dash = R * 0.22;
+  const breathe = 0.5 + 0.5 * Math.sin(time * 1.3);
+  const gap = Math.max(0.18, 0.38 + 0.26 * breathe - 0.3 * speakingW * (0.4 + 0.6 * level));
+  const start = -time * 0.25 * MOTION.orbit;
+  const c = rgba(color, 1);
 
   c2d.save();
-  c2d.lineCap = "round";
-  c2d.setLineDash([dash, dash * 0.7]);
-  c2d.lineDashOffset = -spin * 12;
-  c2d.strokeStyle = `rgba(200, 220, 255, ${0.12 + 0.15 * weight})`;
-  c2d.lineWidth = Math.max(1.5, R * 0.018);
+  c2d.globalAlpha = 0.1 * weight;
+  c2d.strokeStyle = c;
+  c2d.lineWidth = Math.max(2, R * 0.03);
   c2d.beginPath();
-  c2d.arc(cx, cy, orbit, 0, Math.PI * 2);
+  c2d.arc(cx, cy, R, 0, Math.PI * 2);
   c2d.stroke();
-  c2d.setLineDash([]);
+  c2d.restore();
 
-  for (let i = 0; i < 3; i++) {
-    const a = spin + i * (Math.PI * 2 / 3);
-    const x = cx + Math.cos(a) * orbit;
-    const y = cy + Math.sin(a) * orbit;
-    c2d.beginPath();
-    c2d.fillStyle = `rgba(255, 255, 255, ${(0.2 + 0.2 * Math.sin(time * 2.8 + i)) * weight})`;
-    c2d.arc(x, y, Math.max(1.6, R * 0.024), 0, Math.PI * 2);
-    c2d.fill();
-  }
+  ringArc(cx, cy, R, start, start + Math.PI * 2 - gap, c, Math.max(2, R * 0.03), 0.9 * weight,
+    R * 0.2 * MOTION.glow * (0.5 + level));
+
+  const tipA = start + Math.PI * 2 - gap;
+  glowDot(cx + Math.cos(tipA) * R, cy + Math.sin(tipA) * R, Math.max(2, R * 0.026), c, weight,
+    R * 0.14 * MOTION.glow);
+}
+
+function drawInnerDash(cx, cy, R, time, color, weight) {
+  if (weight < 0.02) return;
+  c2d.save();
+  c2d.globalAlpha = 0.22 * weight;
+  c2d.strokeStyle = rgba(color, 1);
+  c2d.lineWidth = Math.max(1, R * 0.008);
+  c2d.setLineDash([R * 0.05, R * 0.11]);
+  c2d.lineDashOffset = -time * R * 0.35 * MOTION.orbit;
+  c2d.beginPath();
+  c2d.arc(cx, cy, R * 0.86, 0, Math.PI * 2);
+  c2d.stroke();
+  c2d.restore();
+}
+
+function drawCore(cx, cy, R, inner, outer, level, weight, time) {
+  if (weight <= 0.01) return;
+  const r = R * (0.56 + 0.09 * level);
+  const pulse = 0.5 + 0.5 * Math.sin(time * 1.15);
+  const g = c2d.createRadialGradient(cx, cy, 0, cx, cy, r);
+  g.addColorStop(0, rgba(mixRgb(inner, { r: 255, g: 255, b: 255 }, 0.45), (0.5 + 0.25 * pulse) * weight));
+  g.addColorStop(0.55, rgba(inner, (0.2 + 0.2 * level) * weight));
+  g.addColorStop(1, rgba(outer, 0));
+  c2d.fillStyle = g;
+  c2d.beginPath();
+  c2d.arc(cx, cy, r, 0, Math.PI * 2);
+  c2d.fill();
+  glowDot(cx, cy, Math.max(1.5, R * 0.013),
+    rgba(mixRgb(inner, { r: 255, g: 255, b: 255 }, 0.6), 0.9 * weight), R * 0.07 * MOTION.glow);
+}
+
+/* ---------------- state overlays ---------------- */
+
+function drawConnecting(cx, cy, R, time, weight) {
+  if (weight < 0.02) return;
+  const c = STATE_COLORS.connecting[0];
+  c2d.save();
+  c2d.globalAlpha = 0.5 * weight;
+  c2d.strokeStyle = rgba(c, 1);
+  c2d.lineWidth = Math.max(1.5, R * 0.013);
+  c2d.lineCap = "round";
+  c2d.setLineDash([R * 0.16, R * 0.1]);
+  c2d.lineDashOffset = -time * R * 0.5 * MOTION.speed;
+  c2d.beginPath();
+  c2d.arc(cx, cy, R * 1.18, 0, Math.PI * 2);
+  c2d.stroke();
   c2d.restore();
 }
 
 function drawClosedFlicker(cx, cy, R, time, weight) {
   if (weight < 0.02) return;
-  const flicker = 0.5 + 0.5 * Math.sin(time * 3.7);
-  const alpha = (0.08 + 0.08 * flicker) * weight;
-
-  c2d.save();
-  c2d.globalAlpha = alpha;
-  c2d.strokeStyle = "rgba(255, 120, 126, 0.95)";
-  c2d.lineWidth = Math.max(1.5, R * 0.02);
-  c2d.beginPath();
-  c2d.moveTo(cx - R * 0.35, cy - R * 0.32);
-  c2d.lineTo(cx + R * 0.35, cy + R * 0.32);
-  c2d.moveTo(cx + R * 0.35, cy - R * 0.32);
-  c2d.lineTo(cx - R * 0.35, cy + R * 0.32);
-  c2d.stroke();
-  c2d.restore();
+  const c = STATE_COLORS.closed[0];
+  const flick = 0.5 + 0.5 * Math.sin(time * 3.7);
+  const a = (0.3 + 0.4 * flick) * weight;
+  ringArc(cx, cy, R, 0.5 + 0.06 * flick, Math.PI - 0.4, rgba(c, 1), Math.max(1.5, R * 0.016), a, 0);
+  ringArc(cx, cy, R, Math.PI + 0.5 - 0.06 * flick, Math.PI * 2 - 0.4, rgba(c, 1),
+    Math.max(1.5, R * 0.016), a, 0);
 }
 
-function drawThinkingBubbles(cx, cy, R, time, weight) {
+function drawListeningRipples(cx, cy, R, time, weight) {
   if (weight < 0.02) return;
-  const phase = time * 0.95;
-  const baseX = cx + R * 0.58;
-  const baseY = cy - R * 0.72;
-  const bubbles = [
-    { d: 0.0, x: 0.00, y: 0.00, r: 0.12, a: 0.34 },
-    { d: 0.7, x: 0.22, y: -0.24, r: 0.17, a: 0.30 },
-    { d: 1.4, x: 0.44, y: -0.48, r: 0.22, a: 0.26 },
-  ];
-
-  c2d.save();
-  for (const b of bubbles) {
-    const k = (Math.sin(phase + b.d) + 1) * 0.5;
-    const alpha = b.a * (0.65 + 0.35 * k) * weight;
-    const bob = Math.sin(phase * 0.9 + b.d) * R * MOTION.bubbleDrift;
-    const x = baseX + R * b.x;
-    const y = baseY + R * b.y + bob;
-    const r = R * b.r * (0.9 + 0.2 * k);
-
-    c2d.beginPath();
-    c2d.fillStyle = `rgba(220, 236, 255, ${alpha.toFixed(3)})`;
-    c2d.arc(x, y, r, 0, Math.PI * 2);
-    c2d.fill();
-
-    c2d.beginPath();
-    c2d.fillStyle = `rgba(255, 255, 255, ${(alpha * 0.65).toFixed(3)})`;
-    c2d.arc(x - r * 0.28, y - r * 0.28, r * 0.24, 0, Math.PI * 2);
-    c2d.fill();
+  const c = STATE_COLORS.listening[0];
+  for (let i = 0; i < 3; i++) {
+    const k = (time * 0.42 * MOTION.ripple + i / 3) % 1;
+    const r = R * (1.02 + 0.5 * k);
+    ringArc(cx, cy, r, 0, Math.PI * 2, rgba(c, 1), Math.max(1, R * 0.011),
+      (1 - k) * 0.3 * weight, R * 0.08 * (1 - k) * MOTION.glow);
   }
-  c2d.restore();
 }
 
-function drawZzz(cx, cy, R, time, weight, rgb, speed) {
+function drawThinkingDots(cx, cy, R, time, weight) {
   if (weight < 0.02) return;
-  const baseX = cx - R * 0.05;
-  const baseY = cy - R * 1.18;
-  const drift = Math.sin(time * 2.2 * speed) * 8;
-  const zzzs = ["z", "zz", "zzz"];
-
-  c2d.save();
-  c2d.font = `${Math.max(14, R * 0.18)}px "Outfit", sans-serif`;
-  c2d.textAlign = "center";
-  c2d.textBaseline = "middle";
-  for (let i = 0; i < zzzs.length; i++) {
-    const ky = baseY - i * (R * 0.12) + drift * (i * 0.2 + 0.2);
-    const kx = baseX + i * (R * 0.1);
-    c2d.fillStyle = `rgba(${rgb}, ${(0.45 + 0.35 * Math.sin(time * 2.5 * speed + i)) * weight})`;
-    c2d.fillText(zzzs[i], kx, ky);
+  const c = STATE_COLORS.thinking[0];
+  const rot = time * 1.05 * MOTION.orbit;
+  for (let i = 0; i < 3; i++) {
+    const a = rot + i * (Math.PI * 2 / 3);
+    const pulse = 0.55 + 0.45 * Math.sin(time * 2.3 + i * 2.1);
+    glowDot(cx + Math.cos(a) * R * 1.1, cy + Math.sin(a) * R * 1.1,
+      Math.max(2, R * 0.028) * pulse, rgba(c, 1), 0.8 * weight, R * 0.12 * MOTION.glow);
   }
-  c2d.restore();
+  ringArc(cx, cy, R * 0.74, -rot * 1.4, -rot * 1.4 + 1.9, rgba(c, 1),
+    Math.max(1.5, R * 0.013), 0.45 * weight, R * 0.08 * MOTION.glow);
+  ringArc(cx, cy, R * 0.74, -rot * 1.4 + Math.PI, -rot * 1.4 + Math.PI + 1.9, rgba(c, 1),
+    Math.max(1.5, R * 0.013), 0.45 * weight, R * 0.08 * MOTION.glow);
 }
 
-function drawDreamingZs(cx, cy, R, time, weight) {
-  drawZzz(cx, cy, R, time, weight, "196, 181, 253", 1);
-}
-
-function drawAsleepZs(cx, cy, R, time, weight) {
-  drawZzz(cx, cy, R, time, weight, "203, 213, 225", 0.6);
-}
-
-function drawMouth(cx, cy, R, speakingWeight, thinkingWeight, playLevel, time) {
-  const speaking = speakingWeight > 0.03;
-  const mouthY = cy + R * 0.33;
-  const halfW = R * 0.22;
-  const jitter = speaking ? Math.sin(time * 15) * R * MOTION.mouthJitter * speakingWeight : 0;
-  const open = R * 0.022 + (R * (MOTION.mouthOpenBase + playLevel * MOTION.mouthOpenLevel) * speakingWeight) + Math.abs(jitter);
-  const smile = R * (0.02 - 0.06 * thinkingWeight);
-
+function drawSpeakingWave(cx, cy, R, time, weight, level) {
+  if (weight < 0.02) return;
+  const c = STATE_COLORS.speaking[0];
+  const n = 28;
+  const base = R * 0.7;
   c2d.save();
   c2d.lineCap = "round";
-
-  // outer lip
-  c2d.beginPath();
-  c2d.strokeStyle = "rgba(10, 10, 16, 0.85)";
-  c2d.lineWidth = Math.max(2, R * 0.045);
-  c2d.moveTo(cx - halfW, mouthY);
-  c2d.quadraticCurveTo(cx, mouthY + open + smile, cx + halfW, mouthY);
-  c2d.stroke();
-
-  // mouth cavity when speaking
-  if (speaking) {
+  c2d.strokeStyle = rgba(c, 1);
+  c2d.lineWidth = Math.max(1.5, R * 0.015);
+  for (let i = 0; i < n; i++) {
+    const a = (i / n) * Math.PI * 2 + time * 0.3;
+    const w = 0.5 + 0.5 * Math.sin(i * 0.9 + time * 6.5 * MOTION.speed);
+    const len = R * (0.04 + (0.04 + 0.2 * level) * w);
+    c2d.globalAlpha = (0.2 + 0.6 * w * (0.35 + 0.65 * level)) * weight;
     c2d.beginPath();
-    c2d.fillStyle = `rgba(12, 8, 12, ${0.25 + 0.42 * speakingWeight})`;
-    c2d.moveTo(cx - halfW * 0.78, mouthY + R * 0.01);
-    c2d.quadraticCurveTo(cx, mouthY + open * 1.18, cx + halfW * 0.78, mouthY + R * 0.01);
-    c2d.quadraticCurveTo(cx, mouthY + R * 0.028, cx - halfW * 0.78, mouthY + R * 0.01);
-    c2d.fill();
+    c2d.moveTo(cx + Math.cos(a) * base, cy + Math.sin(a) * base);
+    c2d.lineTo(cx + Math.cos(a) * (base + len), cy + Math.sin(a) * (base + len));
+    c2d.stroke();
   }
-
   c2d.restore();
 }
 
-function drawSpeakingWave(cx, cy, R, time, weight) {
+function drawDreaming(cx, cy, R, time, weight) {
   if (weight < 0.02) return;
-  const pulse = 0.5 + 0.5 * Math.sin(time * 2.7);
-  const x = cx + R * (0.36 + 0.05 * pulse);
-  const y = cy + R * 0.03;
-
-  c2d.save();
-  c2d.strokeStyle = `rgba(255, 244, 214, ${(0.08 + 0.15 * pulse) * weight})`;
-  c2d.lineWidth = Math.max(1.5, R * 0.018);
-  c2d.lineCap = "round";
+  const c = STATE_COLORS.dreaming[0];
+  const g = c2d.createRadialGradient(cx, cy, R * 0.5, cx, cy, R * 1.55);
+  g.addColorStop(0, rgba(c, 0.09 * weight));
+  g.addColorStop(1, rgba(c, 0));
+  c2d.fillStyle = g;
   c2d.beginPath();
-  c2d.arc(x, y, R * (0.16 + 0.03 * pulse), -0.8, 0.8);
-  c2d.stroke();
-  c2d.beginPath();
-  c2d.arc(x + R * 0.08, y, R * (0.24 + 0.03 * pulse), -0.82, 0.82);
-  c2d.stroke();
-  c2d.restore();
+  c2d.arc(cx, cy, R * 1.55, 0, Math.PI * 2);
+  c2d.fill();
+  for (let i = 0; i < 5; i++) {
+    const a = time * 0.24 * MOTION.orbit + i * 1.257;
+    const rr = R * (1.02 + 0.16 * Math.sin(time * 0.7 + i * 2));
+    const tw = 0.35 + 0.65 * (0.5 + 0.5 * Math.sin(time * 1.5 + i * 1.7));
+    glowDot(cx + Math.cos(a) * rr, cy + Math.sin(a) * rr, Math.max(1.5, R * 0.018) * tw,
+      rgba(c, 1), 0.7 * tw * weight, R * 0.1 * MOTION.glow);
+  }
 }
+
+function drawAsleep(cx, cy, R, time, weight) {
+  if (weight < 0.02) return;
+  const c = STATE_COLORS.asleep[0];
+  const pulse = 0.5 + 0.5 * Math.sin(time * 0.8);
+  ringArc(cx, cy, R * (0.95 + 0.02 * pulse), 0, Math.PI * 2, rgba(c, 1),
+    Math.max(1.5, R * 0.014), (0.14 + 0.1 * pulse) * weight, 0);
+}
+
+/* ---------------- frame loop ---------------- */
 
 function frame() {
-  t += 1 / 60;
+  t += (1 / 60) * MOTION.speed;
   S.micLevel = smoothLevel(S.micLevel, S.micLevelTarget);
   S.playLevel = smoothLevel(S.playLevel, readPlayLevel());
 
   const now = performance.now();
-
   const w = canvas.width, h = canvas.height;
   c2d.clearRect(0, 0, w, h);
-  const cx = w / 2, cy = h / 2;
+  const cx = w / 2, cy = h * 0.46;
 
   const level = Math.max(S.micLevel, S.playLevel);
-  const dotState = currentDotState();
-  updateVisualTarget(dotState, now);
+  const coreState = currentDotState();
+  updateVisualTarget(coreState, now);
   const progress = visualProgress(now);
-  const fromColors = STATE_COLORS[visual.from] || STATE_COLORS.idle;
-  const toColors = STATE_COLORS[visual.to] || STATE_COLORS.idle;
-  const inner = mixHex(fromColors[0], toColors[0], progress);
-  const outer = mixHex(fromColors[1], toColors[1], progress);
-  const speakingWeight = stateWeight("speaking", progress);
-  const thinkingWeight = stateWeight("thinking", progress);
-  const dreamingWeight = stateWeight("dreaming", progress);
+
+  const f = STATE_COLORS[visual.from] || STATE_COLORS.idle;
+  const to = STATE_COLORS[visual.to] || STATE_COLORS.idle;
+  const inner = mixRgb(f[0], to[0], progress);
+  const outer = mixRgb(f[1], to[1], progress);
+
+  const speakingW = stateWeight("speaking", progress);
+  const thinkingW = stateWeight("thinking", progress);
+  const dreamingW = stateWeight("dreaming", progress);
   const asleepW = stateWeight("asleep", progress);
-  // While asleep the blob stops reacting to the mic: no level-driven growth,
-  // wobble, or glow — it sits round and still (eyes closed, z's drifting).
+  const listeningW = stateWeight("listening", progress);
+  const connectingW = stateWeight("connecting", progress);
+  const closedW = stateWeight("closed", progress);
+
+  // asleep: no level response, dim the stack, slow the rotation
   const reactLevel = level * (1 - asleepW);
-  const base = Math.min(w, h) * 0.17;
-  const grow = 1 + reactLevel * MOTION.levelGrow;
-  const R = base * grow;
-  const wobbleAmt = (MOTION.wobbleBase + reactLevel * MOTION.wobbleLevel) * (1 - asleepW);
+  const dim = 1 - asleepW * 0.72;
+  const flicker = closedW > 0.02
+    ? (1 - closedW) + closedW * (0.55 + 0.45 * Math.sin(t * 3.7))
+    : 1;
 
-  const N = 96;
-  c2d.beginPath();
-  for (let i = 0; i <= N; i++) {
-    const th = (i / N) * Math.PI * 2;
-    const wob =
-      0.6 * Math.sin(3 * th + t * 1.3) +
-      0.4 * Math.sin(5 * th - t * 1.9 + 1.0) +
-      0.3 * Math.sin(2 * th + t * 0.7);
-    const r = R * (1 + wobbleAmt * wob);
-    const x = cx + r * Math.cos(th);
-    const y = cy + r * Math.sin(th);
-    if (i === 0) c2d.moveTo(x, y);
-    else c2d.lineTo(x, y);
-  }
-  c2d.closePath();
-  const grad = c2d.createRadialGradient(cx - R * 0.35, cy - R * 0.4, R * 0.1, cx, cy, R * 1.5);
-  grad.addColorStop(0, inner);
-  grad.addColorStop(1, outer);
-  c2d.fillStyle = grad;
-  c2d.shadowColor = outer;
-  c2d.shadowBlur = 40 * (0.4 + reactLevel);
-  c2d.fill();
-  c2d.shadowBlur = 0;
+  const base = Math.min(w, h) * 0.27;
+  const R = base * (1 + reactLevel * 0.05);
 
-  const idleWeight = stateWeight("idle", progress);
-  const listeningWeight = stateWeight("listening", progress);
-  const connectingWeight = stateWeight("connecting", progress);
-  const closedWeight = stateWeight("closed", progress);
+  drawTicks(cx, cy, R, t, inner, dim * flicker, reactLevel);
+  drawOrbit(cx, cy, R, t, inner, dim * flicker, reactLevel);
+  drawMainRing(cx, cy, R, t, inner, dim * flicker, reactLevel, speakingW);
+  drawInnerDash(cx, cy, R, t, inner, dim * flicker);
+  drawCore(cx, cy, R, inner, outer, reactLevel, dim * flicker, t);
 
-  drawIdleBreath(cx, cy, R, t, idleWeight);
-  drawListeningRings(cx, cy, R, t, listeningWeight);
-  drawConnectingOrbit(cx, cy, R, t, connectingWeight);
-  drawClosedFlicker(cx, cy, R, t, closedWeight);
+  drawConnecting(cx, cy, R, t, connectingW);
+  drawClosedFlicker(cx, cy, R, t, closedW);
+  drawListeningRipples(cx, cy, R, t, listeningW);
+  drawThinkingDots(cx, cy, R, t, thinkingW);
+  drawSpeakingWave(cx, cy, R, t, speakingW, reactLevel);
+  drawDreaming(cx, cy, R, t, dreamingW);
+  drawAsleep(cx, cy, R, t, asleepW);
 
-  // eyes — open (blinking) when awake; a closed eyelid while asleep
-  const blink = asleepW > 0.5 ? 0 : blinkScale(now);
-  const eyeR = R * 0.12;
-  const eyeDX = R * 0.34, eyeDY = -R * 0.08;
-  for (const side of [-1, 1]) {
-    c2d.save();
-    c2d.translate(cx + side * eyeDX, cy + eyeDY);
-    if (asleepW < 0.98) {
-      c2d.scale(1, Math.max(0.08, blink) * (1 - asleepW));
-      c2d.beginPath();
-      c2d.fillStyle = "rgba(10, 10, 16, 0.9)";
-      c2d.arc(0, 0, eyeR, 0, Math.PI * 2);
-      c2d.fill();
-      c2d.beginPath();
-      c2d.fillStyle = "rgba(255, 255, 255, 0.85)";
-      c2d.arc(-eyeR * 0.3, -eyeR * 0.3, eyeR * 0.25, 0, Math.PI * 2);
-      c2d.fill();
-    }
-    if (asleepW > 0.02) {
-      c2d.globalAlpha = asleepW;
-      c2d.strokeStyle = "rgba(10, 10, 16, 0.9)";
-      c2d.lineWidth = Math.max(2, R * 0.045);
-      c2d.lineCap = "round";
-      c2d.beginPath();
-      c2d.moveTo(-eyeR, -eyeR * 0.1);
-      c2d.quadraticCurveTo(0, eyeR * 0.65, eyeR, -eyeR * 0.1);
-      c2d.stroke();
-    }
-    c2d.restore();
-  }
-
-  drawMouth(cx, cy, R, speakingWeight, thinkingWeight, S.playLevel, t);
-  drawSpeakingWave(cx, cy, R, t, speakingWeight);
-  drawThinkingBubbles(cx, cy, R, t, thinkingWeight);
-  drawDreamingZs(cx, cy, R, t, dreamingWeight);
-  drawAsleepZs(cx, cy, R, t, asleepW);
+  if (++telTick % 10 === 0) el.telMic.textContent = `${Math.round(S.micLevel * 100)}%`;
 
   el.meterFill.style.width = `${Math.round(S.micLevel * 100)}%`;
   requestAnimationFrame(frame);
@@ -1604,6 +1559,25 @@ el.sessionSelect.addEventListener("change", () => {
   if (el.sessionSelect.value) sendJson({ type: "session", id: el.sessionSelect.value });
 });
 
+el.navToggle.addEventListener("click", () => {
+  const expanded = el.sidenav.classList.toggle("expanded");
+  el.navToggle.setAttribute("aria-expanded", expanded ? "true" : "false");
+  el.navToggle.title = expanded ? "Collapse controls" : "Expand controls";
+});
+
+function setTranscriptOpen(open) {
+  document.body.classList.toggle("transcript-open", open);
+  el.transcriptToggle.setAttribute("aria-expanded", open ? "true" : "false");
+  if (open) {
+    el.transcriptToggle.classList.remove("has-new");
+    scrollTranscript();
+  }
+}
+
+el.transcriptToggle.addEventListener("click", () =>
+  setTranscriptOpen(!document.body.classList.contains("transcript-open")));
+el.transcriptClose.addEventListener("click", () => setTranscriptOpen(false));
+
 if (el.motionPreset) {
   el.motionPreset.addEventListener("change", () => applyMotionPreset(el.motionPreset.value));
 }
@@ -1625,7 +1599,7 @@ window.addEventListener("load", () => {
   requestAnimationFrame(frame);
   if (!window.isSecureContext || !navigator.mediaDevices) {
     el.btnStart.disabled = true;
-    el.hint.innerHTML = "mic blocked &mdash; not a secure context (see sidebar)";
+    el.hint.innerHTML = "mic blocked &mdash; not a secure context";
     addEntry("error", micUnavailableMsg());
   }
 });

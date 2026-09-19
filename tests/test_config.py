@@ -43,6 +43,7 @@ def test_missing_file_uses_built_in_defaults(cfg, tmp_path):
     assert cfg.USER_LOCATION == ""
     assert cfg.USER_TIMEZONE == ""
     assert cfg.USER_UNITS == "metric"
+    assert cfg.UI_CAPTION_LINGER_S == 8.0
     assert cfg.FILLER_PHRASES == (
         "Let me think about that.",
         "Working on it.",
@@ -100,6 +101,9 @@ level_threshold = 0.3
 sustain_ms = 200
 cooldown_ms = 500
 
+[ui]
+caption_linger_s = 12.5
+
 [memory]
 compact_after_chars = 9999
 keep_recent_turns = 2
@@ -137,6 +141,7 @@ exec_timeout_s = 30
     assert cfg.BARGE_LEVEL_THRESHOLD == 0.3
     assert cfg.BARGE_SUSTAIN_MS == 200
     assert cfg.BARGE_COOLDOWN_MS == 500
+    assert cfg.UI_CAPTION_LINGER_S == 12.5
     assert cfg.COMPACT_AFTER_CHARS == 9999
     assert cfg.KEEP_RECENT_TURNS == 2
     assert cfg.DREAM_INTERVAL_S == 7200

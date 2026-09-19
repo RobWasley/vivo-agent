@@ -41,10 +41,11 @@ Protocol (JSON text frames unless noted):
     {"type":"ping"}       -> {"type":"pong"}
   server -> client
     {"type":"config","barge_in":{level_threshold,sustain_ms,cooldown_ms},
-                  "wake":{phrase}}
-                                   sent on connect and after settings are saved
-                                   (T019); UI auto-barge timings (vivo.toml
-                                   [barge_in]) and the wake phrase (T024)
+                   "wake":{phrase},"ui":{caption_linger_s}}
+                                    sent on connect and after settings are saved
+                                    (T019); UI auto-barge timings (vivo.toml
+                                    [barge_in]), the wake phrase (T024) and UI
+                                    display timings ([ui])
     {"type":"wake","active":bool}  wake-phrase session state (T024); sent on
                                    connect and whenever it changes
     {"type":"session","id":str[,"created":true]}
@@ -53,7 +54,12 @@ Protocol (JSON text frames unless noted):
     {"type":"start"}            VAD: speech started
     {"type":"end"}              VAD: utterance captured, processing begins
     {"type":"transcript","text"}
-    {"type":"agent_text","delta"}   LLM text, streamed as generated
+    {"type":"agent_text","delta"[,"start":true][,"filler":true]}
+                                   vivo's spoken text, streamed as generated.
+                                   `start` marks the first delta of a new
+                                   message (transcript line + caption reset on
+                                   the client); `filler` marks a thinking
+                                   filler phrase
     {"type":"tool","name","result"} a tool was executed
     binary                    int16 mono TTS PCM (one chunk per sentence,
                                   sample rate in config.audio.tts_sample_rate)
@@ -365,6 +371,12 @@ class ThinkingFiller:
                 n = self._count
             self.bench.mark(f"filler_{n}_queued")
             log.info("filler %d queued (%.1fs into thinking): %s", n, silent, phrase)
+            if self.session.alive(self.gen):
+                # Display the phrase in the transcript + caption as its own
+                # (muted) message; it is never stored in the conversation.
+                self.session.send(
+                    {"type": "agent_text", "delta": phrase, "start": True, "filler": True}
+                )
 
 
 class Engines:
@@ -709,11 +721,15 @@ def _handle_utterance(
                 session.send({"type": "tool", "name": name, "result": str(result)})
             return result
 
+        # Message boundaries for the client transcript: the first delta of a
+        # new spoken message carries start=True (a tool round closes the
+        # current one, so the text after it starts a fresh message).
+        msg_open = False
         if fixed_reply is not None:
             # Deterministic reply (wake ack / goodnight): no LLM round trip,
             # no filler, no tool access.
             spoken.append(fixed_reply)
-            session.send({"type": "agent_text", "delta": fixed_reply})
+            session.send({"type": "agent_text", "delta": fixed_reply, "start": True})
             for sentence in list(chunker.add(fixed_reply)) + chunker.flush():
                 enqueue(sentence)
         else:
@@ -722,7 +738,7 @@ def _handle_utterance(
             if wake_prefix is not None:
                 # Wake ack spoken before the LLM reply (phrase + request).
                 spoken.append(wake_prefix)
-                session.send({"type": "agent_text", "delta": wake_prefix})
+                session.send({"type": "agent_text", "delta": wake_prefix, "start": True})
                 for sentence in list(chunker.add(wake_prefix)) + chunker.flush():
                     enqueue(sentence)
             for item in engines.agent.reply(
@@ -742,12 +758,17 @@ def _handle_utterance(
                     bench.mark("thinking_end")
                     thinking_secs += time.monotonic() - think_started
                 if isinstance(item, ToolRound):
+                    msg_open = False
                     continue
                 if "llm_first_token" not in bench.events:
                     bench.mark("llm_first_token")
                 spoken.append(item)
                 filler.note_text()
-                session.send({"type": "agent_text", "delta": item})
+                if not msg_open:
+                    msg_open = True
+                    session.send({"type": "agent_text", "delta": item, "start": True})
+                else:
+                    session.send({"type": "agent_text", "delta": item})
                 for sentence in chunker.add(item):
                     enqueue(sentence)
             for sentence in chunker.flush():
@@ -862,7 +883,7 @@ def _speak_goodnight(engines: Engines) -> None:
         for s in targets:
             if s.closed:
                 continue
-            s.send({"type": "agent_text", "delta": text})
+            s.send({"type": "agent_text", "delta": text, "start": True})
         for s in targets:
             if s.closed or audio.size == 0:
                 continue
@@ -885,6 +906,9 @@ def config_msg() -> dict:
             "cooldown_ms": config.BARGE_COOLDOWN_MS,
         },
         "wake": {"phrase": config.WAKE_PHRASE},
+        "ui": {
+            "caption_linger_s": config.UI_CAPTION_LINGER_S,
+        },
         "audio": {
             "tts_sample_rate": config.TTS_SAMPLE_RATE,
         },

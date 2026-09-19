@@ -252,7 +252,7 @@ checkpoint message — it never blocks an utterance, and a checkpoint is only
 applied if nothing was appended meanwhile. A pre-sessions
 `./data/conversation.json` is migrated automatically on first start.
 
-**Wake phrase.** With `[wake] phrase` set, vivo starts *asleep*: she keeps
+**Wake phrase.** With `[wake] phrase` set, vivo starts *asleep*: it keeps
 listening and transcribing, but only an utterance containing the phrase
 (words in order, punctuation/case tolerant) reaches the LLM — everything else
 is dropped silently, so ambient speech can't flood the transcript. A
@@ -261,7 +261,7 @@ plus a request ("hey vivo, what time is it?") speaks the ack, then answers the
 request as usual. While awake, vivo returns to sleep when you say one of
 `end_phrases` or stay quiet for `session_timeout_s` (any exchange restarts
 the clock; it never fires mid-reply) — both ends speak the `goodnight` so
-you know she went quiet. The state is shared by all open connections,
+you know it went quiet. The state is shared by all open connections,
 hot-applied from the settings pane (an empty `phrase` restores the legacy
 always-answer), and the UI shows an *asleep* status with a manual wake button.
 Matching is done on the STT transcript — there is no keyword-spotting model.

@@ -184,6 +184,11 @@ def _emit() -> None:
     g["BARGE_SUSTAIN_MS"] = _get("barge_in", "sustain_ms", "BARGE_SUSTAIN_MS", 250, int)
     g["BARGE_COOLDOWN_MS"] = _get("barge_in", "cooldown_ms", "BARGE_COOLDOWN_MS", 700, int)
 
+    # --- UI display ------------------------------------------------------------------
+    # How long the in-ring caption stays on screen after the last word of a
+    # message (client-side; sent to the browser in the `config` frame).
+    g["UI_CAPTION_LINGER_S"] = _get("ui", "caption_linger_s", "UI_CAPTION_LINGER_S", 8.0, float)
+
     # --- Wake phrase (T024) -------------------------------------------------------
     # Empty phrase = feature off: every utterance is answered (legacy). While
     # asleep, only an utterance containing the phrase is processed; an awake
@@ -288,6 +293,9 @@ def effective_dict() -> dict:
             "level_threshold": g["BARGE_LEVEL_THRESHOLD"],
             "sustain_ms": g["BARGE_SUSTAIN_MS"],
             "cooldown_ms": g["BARGE_COOLDOWN_MS"],
+        },
+        "ui": {
+            "caption_linger_s": g["UI_CAPTION_LINGER_S"],
         },
         "wake": {
             "phrase": g["WAKE_PHRASE"],

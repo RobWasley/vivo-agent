@@ -3,88 +3,175 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>vivo</title>
-  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ccircle cx='50' cy='50' r='42' fill='%234fd1c5'/%3E%3Ccircle cx='38' cy='44' r='7' fill='%230b0b10'/%3E%3Ccircle cx='62' cy='44' r='7' fill='%230b0b10'/%3E%3C/svg%3E">
+  <title>vivo — Voice Console</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='16' r='11' fill='none' stroke='%2338bdf8' stroke-width='3'/%3E%3Ccircle cx='16' cy='16' r='4' fill='%2338bdf8'/%3E%3C/svg%3E">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
-  <div class="ambient" aria-hidden="true">
-    <div class="ambient-shape ambient-shape-a"></div>
-    <div class="ambient-shape ambient-shape-b"></div>
+  <div class="bg" aria-hidden="true">
+    <div class="bg-grid"></div>
+    <div class="bg-glow bg-glow-a"></div>
+    <div class="bg-glow bg-glow-b"></div>
   </div>
 
-  <div class="app-shell">
-    <header class="topbar">
-      <div class="brand">
-        <span class="brand-dot"></span>
-        <div class="brand-copy">
-          <h1>vivo</h1>
-          <p>Voice-native desktop agent</p>
-        </div>
-      </div>
-      <div class="status" id="status" data-state="connecting" aria-live="polite">
-        <span class="status-led"></span>
-        <span class="status-label" id="status-label">Connecting&hellip;</span>
-      </div>
-    </header>
+  <header class="brand-mini" aria-hidden="true">
+    <svg viewBox="0 0 32 32" fill="none">
+      <circle cx="16" cy="16" r="13" stroke="currentColor" stroke-opacity="0.3" stroke-width="1.5"/>
+      <path d="M16 3 A13 13 0 0 1 27.26 9.5" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"/>
+      <path d="M16 29 A13 13 0 0 1 4.74 22.5" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"/>
+      <circle cx="16" cy="16" r="4.5" fill="currentColor"/>
+    </svg>
+    <span>vivo</span>
+  </header>
 
-    <main class="layout">
-      <section class="stage panel">
-        <div class="stage-head">
-          <h2>Live Voice</h2>
-          <p>Listen, think, and speak with barge-in control.</p>
-        </div>
-        <div class="stage-canvas-wrap">
-          <canvas id="dot" aria-label="Vivo state blob"></canvas>
-          <div class="meter" title="input level">
-            <div class="meter-fill" id="meter-fill"></div>
-          </div>
-        </div>
-      </section>
-
-      <aside class="sidebar panel">
-        <div class="sidebar-head">
-          <h2>Transcript</h2>
-          <button class="ghost" id="btn-clear" title="Clear transcript">clear</button>
-        </div>
-        <div class="transcript" id="transcript">
-          <div class="entry entry-hint">
-            <span class="who">vivo</span>
-            <p>Hit <b>start</b>, then talk. I&rsquo;ll listen, think, and answer out loud.</p>
-          </div>
-        </div>
-      </aside>
-    </main>
-
-    <footer class="controls panel">
-      <div class="control-row control-row-primary">
-        <button class="primary" id="btn-start">start</button>
-        <button id="btn-barage" title="Interrupt me now">barge in</button>
-        <button class="ghost" id="btn-flush" title="Finish the current utterance">flush</button>
-        <button class="ghost" id="btn-wake" title="Wake vivo now (instead of saying the wake phrase)" disabled>wake</button>
-        <button class="ghost" id="btn-dream" title="Run a memory dream pass now">dream</button>
-      </div>
-      <div class="control-row control-row-secondary">
-        <select id="session-select" class="session-select" title="Conversation" disabled></select>
-        <button class="ghost" id="btn-new-session" title="Start a new conversation">new</button>
-        <button class="ghost" id="btn-rename-session" title="Rename selected conversation">rename</button>
-        <button class="ghost" id="btn-delete-session" title="Delete selected conversation">delete</button>
-        <button class="ghost" id="btn-settings" title="Settings">settings</button>
-        <label class="motion-control" for="motion-preset">
-          <span>motion</span>
-          <select id="motion-preset" title="Animation intensity">
-            <option value="calm">calm</option>
-            <option value="balanced" selected>balanced</option>
-            <option value="expressive">expressive</option>
-          </select>
-        </label>
-      </div>
-      <p class="hint" id="hint">mic off &middot; click <b>start</b> to allow the microphone</p>
-    </footer>
+  <div class="stage-root" aria-label="Live voice">
+    <canvas id="dot" aria-label="Vivo state ring"></canvas>
+    <p class="caption" id="caption" aria-live="polite"></p>
+    <p class="hint" id="hint">mic off &middot; click <b>start</b> to allow the microphone</p>
   </div>
+
+  <nav class="sidenav" id="sidenav" aria-label="Controls">
+    <button class="nav-toggle" id="nav-toggle" title="Expand controls" aria-expanded="false" aria-controls="sidenav">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M9 6l6 6-6 6"/>
+      </svg>
+    </button>
+
+    <div class="nav-group">
+      <button class="nav-btn primary" id="btn-start" title="Start microphone" aria-label="Start microphone">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M12 3v8"/>
+          <path d="M6.3 6.6a8 8 0 1 0 11.4 0"/>
+        </svg>
+        <span class="nav-label">Start</span>
+      </button>
+      <button class="nav-btn" id="btn-barage" title="Interrupt me now">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M13 2 4.5 13.5H11l-1 8.5L18.5 10.5H12l1-8.5z"/>
+        </svg>
+        <span class="nav-label">Barge in</span>
+      </button>
+      <button class="nav-btn" id="btn-flush" title="Finish the current utterance">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M4 5.5v13l7.5-6.5L4 5.5z"/>
+          <path d="M12.5 5.5v13L20 12l-7.5-6.5z"/>
+        </svg>
+        <span class="nav-label">Flush</span>
+      </button>
+      <button class="nav-btn" id="btn-wake" title="Wake vivo now (instead of saying the wake phrase)" disabled>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="12" cy="12" r="4"/>
+          <path d="M12 2.5v2.5M12 19v2.5M2.5 12H5M19 12h2.5M5 5l1.8 1.8M17.2 17.2 19 19M19 5l-1.8 1.8M6.8 17.2 5 19"/>
+        </svg>
+        <span class="nav-label">Wake</span>
+      </button>
+      <button class="nav-btn" id="btn-dream" title="Run a memory dream pass now">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M20.5 14.5A8.5 8.5 0 1 1 9.5 3.5a7 7 0 1 0 11 11z"/>
+        </svg>
+        <span class="nav-label">Dream</span>
+      </button>
+    </div>
+
+    <div class="nav-divider" aria-hidden="true"></div>
+
+    <div class="nav-group">
+      <button class="nav-btn" id="btn-new-session" title="Start a new conversation">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M12 5v14M5 12h14"/>
+        </svg>
+        <span class="nav-label">New</span>
+      </button>
+      <button class="nav-btn" id="btn-rename-session" title="Rename selected conversation">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M4 20l4.5-1L20 7.5 16.5 4 5 15.5 4 20z"/>
+        </svg>
+        <span class="nav-label">Rename</span>
+      </button>
+      <button class="nav-btn danger" id="btn-delete-session" title="Delete selected conversation">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M5 7h14"/>
+          <path d="M9.5 7V4.5h5V7"/>
+          <path d="M7 7l1 13.5h8L17 7"/>
+        </svg>
+        <span class="nav-label">Delete</span>
+      </button>
+      <label class="nav-select" for="session-select">
+        <span class="nav-select-label">Conversation</span>
+        <select id="session-select" title="Conversation" disabled></select>
+      </label>
+    </div>
+
+    <div class="nav-divider" aria-hidden="true"></div>
+
+    <div class="nav-group">
+      <button class="nav-btn" id="btn-settings" title="Settings">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M4 7h9.5M18.5 7H20M4 12h3.5M12.5 12H20M4 17h9.5M18.5 17H20"/>
+          <circle cx="15.5" cy="7" r="2.2"/>
+          <circle cx="9.5" cy="12" r="2.2"/>
+          <circle cx="15.5" cy="17" r="2.2"/>
+        </svg>
+        <span class="nav-label">Settings</span>
+      </button>
+      <label class="nav-select" for="motion-preset">
+        <span class="nav-select-label">Motion</span>
+        <select id="motion-preset" title="Animation intensity">
+          <option value="calm">calm</option>
+          <option value="balanced" selected>balanced</option>
+          <option value="expressive">expressive</option>
+        </select>
+      </label>
+    </div>
+  </nav>
+
+  <button class="transcript-tab" id="transcript-toggle" aria-expanded="false" aria-controls="transcript-panel" title="Show transcript">
+    <span class="tab-dot" aria-hidden="true"></span>
+    <span class="tab-text">transcript</span>
+  </button>
+
+  <aside class="transcript-panel" id="transcript-panel" aria-label="Transcript">
+    <div class="panel-head">
+      <h2>Transcript</h2>
+      <span class="panel-spacer"></span>
+      <button class="ghost tiny" id="btn-clear" title="Clear transcript">clear</button>
+      <button class="ghost tiny" id="transcript-close" title="Hide transcript">&times;</button>
+    </div>
+    <div class="transcript" id="transcript">
+      <div class="entry entry-hint">
+        <span class="t">&mdash;</span>
+        <span class="who">sys</span>
+        <p>Hit <b>start</b>, then talk. I&rsquo;ll listen, think, and answer out loud.</p>
+      </div>
+    </div>
+  </aside>
+
+  <footer class="telemetry" aria-label="System status">
+    <div class="tel">
+      <span class="tel-key">Connection</span>
+      <span class="tel-val" id="tel-uplink" data-state="connecting">connecting</span>
+    </div>
+    <div class="tel">
+      <span class="tel-key">State</span>
+      <span class="tel-val" id="tel-pipeline" data-state="idle">idle</span>
+    </div>
+    <div class="tel tel-mic">
+      <span class="tel-key">Input level</span>
+      <span class="tel-val" id="tel-mic">0%</span>
+      <span class="tel-meter" aria-hidden="true"><span class="meter-fill" id="meter-fill"></span></span>
+    </div>
+    <div class="tel">
+      <span class="tel-key">Wake</span>
+      <span class="tel-val" id="tel-wake">standby</span>
+    </div>
+    <div class="tel tel-session">
+      <span class="tel-key">Session</span>
+      <span class="tel-val" id="tel-session">&mdash;</span>
+    </div>
+  </footer>
 
   <dialog id="settings" class="settings">
     <div class="settings-head">
@@ -95,8 +182,8 @@
     <div class="settings-foot">
       <span class="settings-msg" id="settings-msg"></span>
       <span class="settings-spacer"></span>
-      <button class="ghost" id="btn-settings-close">close</button>
-      <button class="primary" id="btn-settings-save">save</button>
+      <button class="ghost" id="btn-settings-close">Close</button>
+      <button class="primary" id="btn-settings-save">Save</button>
     </div>
   </dialog>
 

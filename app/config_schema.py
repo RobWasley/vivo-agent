@@ -270,7 +270,7 @@ SCHEMA = {
                 "type": "float",
                 "label": "Speech threshold",
                 "help": "Level above which audio counts as speech. Raise it if ambient noise "
-                        "triggers vivo, lower it if she misses quiet speech.",
+                        "triggers vivo, lower it if it misses quiet speech.",
                 "apply": "next",
                 "min": 0.1,
                 "max": 0.9,
@@ -336,8 +336,8 @@ SCHEMA = {
             "level_threshold": {
                 "type": "float",
                 "label": "Mic level threshold",
-                "help": "While vivo is speaking, sustained mic level above this interrupts her. The "
-                        "browser's echo cancellation has already removed her own voice.",
+                "help": "While vivo is speaking, sustained mic level above this interrupts it. The "
+                        "browser's echo cancellation has already removed its own voice.",
                 "apply": "now",
                 "min": 0.05,
                 "max": 0.9,
@@ -366,16 +366,32 @@ SCHEMA = {
             },
         },
     },
+    "ui": {
+        "title": "UI display",
+        "keys": {
+            "caption_linger_s": {
+                "type": "float",
+                "label": "Caption linger (s)",
+                "help": "How long vivo's caption stays on screen after the last word of a message. "
+                        "Each new message (filler, acknowledgement, answer part) replaces it.",
+                "apply": "now",
+                "min": 1.0,
+                "max": 60.0,
+                "step": 0.5,
+                "attr": "UI_CAPTION_LINGER_S",
+            },
+        },
+    },
     "wake": {
         "title": "Wake phrase",
         "keys": {
             "phrase": {
                 "type": "str",
                 "label": "Wake phrase",
-                "help": "Say this to wake vivo: she listens silently for it and ignores everything "
+                "help": "Say this to wake vivo: it listens silently for it and ignores everything "
                         "else, so ambient speech doesn't flood the transcript. Anything after the "
                         "phrase in the same utterance is answered too. An empty phrase disables the "
-                        "wake word (she answers every utterance).",
+                        "wake word (it answers every utterance).",
                 "apply": "now",
                 "attr": "WAKE_PHRASE",
             },

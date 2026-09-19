@@ -27,7 +27,7 @@ FastAPI (uvicorn)
 
 - Docker + Compose.
 - A CPU with ≥8 cores recommended. Benchmarks on a 24-core host: STT
-  4.6× realtime, TTS ~0.2× realtime (see `NOTES.md` for the full numbers).
+  4.6× realtime, TTS ~0.2× realtime on a 24-core host.
 - A **running llama.cpp server** with an OpenAI-compatible `/v1` endpoint:
   - tool calling enabled (`--tools all`),
   - a Qwen3-style chat model whose template honours
@@ -381,8 +381,7 @@ Most tests run offline (fake LLM/TTS where needed); the agent, pipeline and
 compaction tests call the **live llama.cpp server**, so it must be up and
 reachable from the containers. The full suite is ~83 s (up to ~105 s under
 LLM contention). VAD/STT tests use a
-real TTS speech fixture — synthetic tones do not reliably trigger Silero v6
-(see `NOTES.md`).
+real TTS speech fixture — synthetic tones do not reliably trigger Silero v6.
 
 ## Operations
 
@@ -396,13 +395,8 @@ real TTS speech fixture — synthetic tones do not reliably trigger Silero v6
 - **Rebuild after UI edits**: `static/` is baked into the image, so
   `docker compose build && up -d --force-recreate`.
 
-## Documentation
+## Screenshots
 
-- `SPEC.md` — requirements, architecture, acceptance criteria
-- `TASKS.md` — build tasks T001–T022 (all done) with verification evidence
-- `DECISIONS.md` — D001–D018: design log (why faster-whisper/LuxTTS,
-  hand-rolled agent, barge-in generation token, memory compaction, sandbox,
-  thinking mode + spoken fillers, named conversation sessions, LuxTTS voice
-  cloning)
-- `STATUS.md` — current state, resume notes, known gotchas
-- `NOTES.md` — benchmarks and debugging discoveries
+![vivo minimal idle UI](vivo-minimal-idle.png)
+
+_vivo in its minimal idle state — a wobbly dot that wakens when you say the wake phrase._

@@ -6,3 +6,9 @@ node_modules/
 models/
 data/
 .playwright-mcp/
+# Internal docs (not user-facing)
+DECISIONS.md
+NOTES.md
+SPEC.md
+STATUS.md
+TASKS.md

@@ -566,6 +566,63 @@ class VoiceSession:
         self.conversation = store.conversation_for(session_id)
         return True
 
+    def _conversation_id(self, requested: object) -> str:
+        """Resolve the user-facing `current` alias for conversation tools."""
+        value = str(requested or "").strip()
+        return self.session_id if value.lower() == "current" else value
+
+    def execute_conversation_tool(self, name: str, args: dict) -> str | None:
+        """Run conversation tools that require the current connection binding.
+
+        Returns None for non-conversation tools so callers can delegate those to
+        the ordinary global tool dispatcher.
+        """
+        store = self.engines.sessions
+        if name == "list_conversations":
+            rows = store.list_sessions()
+            if not rows:
+                return "(no conversations)"
+            return "\n".join(
+                f"{row['id']} | {row['name'] or '(unnamed)'} | {row['turns']} turns"
+                + (" | current" if row["id"] == self.session_id else "")
+                for row in rows
+            )
+        if name == "create_conversation":
+            session_id = store.create()
+            label = str(args.get("name") or "").strip()
+            if label:
+                store.rename(session_id, label)
+            self.switch_session(session_id)
+            self.send({"type": "session", "id": session_id, "created": True})
+            return f"created and switched to conversation {session_id}"
+        if name == "switch_conversation":
+            session_id = self._conversation_id(args.get("id"))
+            if not self.switch_session(session_id):
+                return f"error: unknown conversation: {session_id}"
+            store.set_active(session_id)
+            self.send({"type": "session", "id": session_id})
+            return f"switched to conversation {session_id}"
+        if name == "rename_conversation":
+            session_id = self._conversation_id(args.get("id"))
+            if session_id not in store.ids():
+                return f"error: unknown conversation: {session_id}"
+            label = str(args.get("name") or "").strip()
+            if not label:
+                return "error: conversation name is required"
+            store.rename(session_id, label)
+            return f"renamed conversation {session_id} to {label}"
+        if name == "delete_conversation":
+            session_id = self._conversation_id(args.get("id"))
+            if session_id not in store.ids():
+                return f"error: unknown conversation: {session_id}"
+            was_current = session_id == self.session_id
+            store.delete(session_id)
+            if was_current:
+                self.switch_session(store.active_id)
+                self.send({"type": "session", "id": self.session_id})
+            return f"deleted conversation {session_id}"
+        return None
+
     def release(self) -> None:
         """Barge-in: free the mic, invalidate the active reply, drain its queue.
 
@@ -756,7 +813,9 @@ def _handle_utterance(
             bench.accumulate("llm_blocked_on_tts", time.monotonic() - t0)
 
         def execute(name: str, args: dict) -> str:
-            result = tools.execute(name, args)
+            result = session.execute_conversation_tool(name, args)
+            if result is None:
+                result = tools.execute(name, args)
             log.info("tool %s -> %s", name, str(result)[:120])
             if session.alive(gen):
                 session.send({"type": "tool", "name": name, "result": str(result)})
@@ -892,7 +951,9 @@ def _handle_text_utterance(
             return
 
         def execute(name: str, args: dict) -> str:
-            result = tools.execute(name, args)
+            result = session.execute_conversation_tool(name, args)
+            if result is None:
+                result = tools.execute(name, args)
             log.info("tool %s -> %s", name, str(result)[:120])
             if session.alive(gen):
                 session.send({"type": "tool", "name": name, "result": str(result)})

@@ -288,6 +288,34 @@ def test_voice_session_binding():
 
     asyncio.run(go())
 
+def test_conversation_tools_manage_current_session():
+    store = SessionStore()
+    engines = _engines(store)
+
+    async def go() -> None:
+        session = VoiceSession(_RecWS(), engines)
+        original = session.session_id
+        created = session.execute_conversation_tool(
+            "create_conversation", {"name": "Planning"}
+        )
+        current = session.session_id
+        assert current != original and "created and switched" in created
+        assert store.list_sessions()[0]["name"] == "Planning"
+        assert "current" in session.execute_conversation_tool(
+            "list_conversations", {}
+        )
+        assert "renamed" in session.execute_conversation_tool(
+            "rename_conversation", {"id": "current", "name": "Today"}
+        )
+        assert store.list_sessions()[0]["name"] == "Today"
+        assert "deleted" in session.execute_conversation_tool(
+            "delete_conversation", {"id": "current"}
+        )
+        assert session.session_id == store.active_id
+        assert current not in store.ids()
+
+    asyncio.run(go())
+
 
 # ---------------- serve_session handshake + commands ----------------
 

@@ -123,6 +123,14 @@ def test_unknown_tool():
     assert tools.execute("nope", {}).startswith("error")
 
 
+def test_conversation_tools_are_advertised_to_the_agent():
+    names = {tool["function"]["name"] for tool in tools.TOOLS}
+    assert {
+        "list_conversations", "create_conversation", "switch_conversation",
+        "rename_conversation", "delete_conversation",
+    } <= names
+
+
 def test_tool_registry_validates_and_executes():
     registry = ToolRegistry()
     registry.register(

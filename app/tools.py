@@ -345,6 +345,62 @@ TOOLS: List[dict] = [
     {
         "type": "function",
         "function": {
+            "name": "list_conversations",
+            "description": "List saved conversations with their IDs, names, turn counts, and active status.",
+            "parameters": {"type": "object", "properties": {}, "required": []},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "create_conversation",
+            "description": "Create and switch to a new conversation. Optionally give it a name.",
+            "parameters": {
+                "type": "object",
+                "properties": {"name": {"type": "string"}},
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "switch_conversation",
+            "description": "Switch to a saved conversation by ID. Use list_conversations first to find IDs.",
+            "parameters": {
+                "type": "object",
+                "properties": {"id": {"type": "string"}},
+                "required": ["id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "rename_conversation",
+            "description": "Rename a saved conversation. Use id 'current' for the current conversation.",
+            "parameters": {
+                "type": "object",
+                "properties": {"id": {"type": "string"}, "name": {"type": "string"}},
+                "required": ["id", "name"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "delete_conversation",
+            "description": "Delete a saved conversation only when the user explicitly asks. Use id 'current' for the current conversation.",
+            "parameters": {
+                "type": "object",
+                "properties": {"id": {"type": "string"}},
+                "required": ["id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "read_file",
             "description": "Read a text file from the workspace. Path is relative to the workspace root.",
             "parameters": {

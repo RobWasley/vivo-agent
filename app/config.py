@@ -213,6 +213,7 @@ def _emit() -> None:
 
     # --- Agent tools -------------------------------------------------------------
     g["MAX_TOOL_ROUNDS"] = _get("agent", "max_tool_rounds", "MAX_TOOL_ROUNDS", 8, int)
+    g["TOOL_RETRIES"] = _get("agent", "tool_retries", "TOOL_RETRIES", 2, int)
     # Shell exec limits (voice latency: keep commands short by default).
     g["EXEC_TIMEOUT"] = _get("agent", "exec_timeout_s", "EXEC_TIMEOUT", 60, int)
     g["EXEC_MAX_TIMEOUT"] = _get("agent", "exec_max_timeout_s", "EXEC_MAX_TIMEOUT", 120, int)
@@ -311,6 +312,7 @@ def effective_dict() -> dict:
         },
         "agent": {
             "max_tool_rounds": g["MAX_TOOL_ROUNDS"],
+            "tool_retries": g["TOOL_RETRIES"],
             "exec_timeout_s": g["EXEC_TIMEOUT"],
             "exec_max_timeout_s": g["EXEC_MAX_TIMEOUT"],
             "exec_max_output_chars": g["EXEC_MAX_OUTPUT"],

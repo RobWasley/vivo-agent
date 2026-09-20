@@ -21,6 +21,7 @@ import httpx
 DEFAULT_MAX_TOKENS = 300
 DEFAULT_MAX_TOOL_ROUNDS = 8
 SUMMARY_MAX_TOKENS = 300
+DEFAULT_TOOL_RETRIES = 2
 
 
 class ToolRound:
@@ -49,6 +50,7 @@ class Agent:
         tools: Optional[List[dict]] = None,
         max_tokens: int = DEFAULT_MAX_TOKENS,
         max_tool_rounds: int = DEFAULT_MAX_TOOL_ROUNDS,
+        tool_retries: int = DEFAULT_TOOL_RETRIES,
         thinking: bool = False,
         system_prompt: str = "",
         user_profile: str = "",
@@ -64,6 +66,7 @@ class Agent:
         self.thinking = thinking
         self.max_tokens = max_tokens
         self.max_tool_rounds = max_tool_rounds
+        self.tool_retries = max(int(tool_retries), 0)
         self.client = client or httpx.Client(timeout=timeout)
         self._owns_client = client is None
 
@@ -94,63 +97,73 @@ class Agent:
         """One completion. Yields (kind, value) where kind is 'reasoning'
         (thinking deltas, when enabled), 'text', or 'tool_calls' (final list
         at end of stream)."""
-        content_parts: List[str] = []
-        tool_ids: Dict[int, str] = {}
-        tool_names: Dict[int, str] = {}
-        tool_args: Dict[int, str] = {}
+        for attempt in range(self.tool_retries + 1):
+            content_parts: List[str] = []
+            tool_ids: Dict[int, str] = {}
+            tool_names: Dict[int, str] = {}
+            tool_args: Dict[int, str] = {}
+            emitted = False
+            try:
+                with self.client.stream(
+                    "POST",
+                    f"{self.base_url}/chat/completions",
+                    json=self._payload(messages),
+                ) as r:
+                    r.raise_for_status()
+                    for line in r.iter_lines():
+                        if not line or not line.startswith("data:"):
+                            continue
+                        data = line[5:].strip()
+                        if data == "[DONE]":
+                            break
+                        try:
+                            ev = json.loads(data)
+                        except json.JSONDecodeError:
+                            continue
+                        choices = ev.get("choices") or []
+                        if not choices:
+                            continue
+                        delta = choices[0].get("delta") or {}
+                        # Reasoning streams in `reasoning` (llama.cpp) or
+                        # `reasoning_content` (OpenAI-style servers); never spoken.
+                        reasoning = delta.get("reasoning") or delta.get("reasoning_content")
+                        if reasoning:
+                            emitted = True
+                            yield "reasoning", reasoning
+                        text = delta.get("content")
+                        if text:
+                            emitted = True
+                            content_parts.append(text)
+                            yield "text", text
+                        for tc in delta.get("tool_calls") or []:
+                            idx = tc.get("index", 0)
+                            if tc.get("id"):
+                                tool_ids[idx] = tc["id"]
+                            fn = tc.get("function") or {}
+                            if fn.get("name"):
+                                tool_names[idx] = fn["name"]
+                            if fn.get("arguments"):
+                                tool_args[idx] = tool_args.get(idx, "") + fn["arguments"]
+            except httpx.HTTPStatusError as exc:
+                status = exc.response.status_code
+                if status >= 500 and not emitted and attempt < self.tool_retries:
+                    continue
+                raise
 
-        with self.client.stream(
-            "POST",
-            f"{self.base_url}/chat/completions",
-            json=self._payload(messages),
-        ) as r:
-            r.raise_for_status()
-            for line in r.iter_lines():
-                if not line or not line.startswith("data:"):
-                    continue
-                data = line[5:].strip()
-                if data == "[DONE]":
-                    break
-                try:
-                    ev = json.loads(data)
-                except json.JSONDecodeError:
-                    continue
-                choices = ev.get("choices") or []
-                if not choices:
-                    continue
-                delta = choices[0].get("delta") or {}
-                # Reasoning streams in `reasoning` (llama.cpp) or
-                # `reasoning_content` (OpenAI-style servers); never spoken.
-                reasoning = delta.get("reasoning") or delta.get("reasoning_content")
-                if reasoning:
-                    yield "reasoning", reasoning
-                text = delta.get("content")
-                if text:
-                    content_parts.append(text)
-                    yield "text", text
-                for tc in delta.get("tool_calls") or []:
-                    idx = tc.get("index", 0)
-                    if tc.get("id"):
-                        tool_ids[idx] = tc["id"]
-                    fn = tc.get("function") or {}
-                    if fn.get("name"):
-                        tool_names[idx] = fn["name"]
-                    if fn.get("arguments"):
-                        tool_args[idx] = tool_args.get(idx, "") + fn["arguments"]
-
-        tool_calls = []
-        for idx in sorted(tool_names):
-            tool_calls.append(
-                {
-                    "id": tool_ids.get(idx) or f"call_{idx}",
-                    "type": "function",
-                    "function": {
-                        "name": tool_names[idx],
-                        "arguments": tool_args.get(idx, "{}"),
-                    },
-                }
-            )
-        yield "tool_calls", tool_calls
+            tool_calls = []
+            for idx in sorted(tool_names):
+                tool_calls.append(
+                    {
+                        "id": tool_ids.get(idx) or f"call_{idx}",
+                        "type": "function",
+                        "function": {
+                            "name": tool_names[idx],
+                            "arguments": tool_args.get(idx, "{}"),
+                        },
+                    }
+                )
+            yield "tool_calls", tool_calls
+            return
 
     def reply(
         self, user_text: str, execute, history: Optional[List[dict]] = None

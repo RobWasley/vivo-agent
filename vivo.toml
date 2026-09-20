@@ -125,6 +125,8 @@ dream_interval_s = 3600
 # Agent tools
 # How many tool-call rounds one reply may use before it must end with an answer.
 max_tool_rounds = 8
+# How many times vivo retries a clean language-model server error while handling a tool request. Retries stop once any reply text has streamed.
+tool_retries = 2
 # Default timeout for shell commands.
 exec_timeout_s = 60
 # Longest command timeout the model may request.

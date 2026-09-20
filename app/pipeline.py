@@ -435,7 +435,7 @@ class Engines:
         self.agent = Agent(
             config.LLM_BASE_URL, config.LLM_MODEL, config.PERSONA, tools=tools.TOOLS,
             thinking=config.LLM_THINKING, max_tokens=config.LLM_MAX_TOKENS,
-            max_tool_rounds=config.MAX_TOOL_ROUNDS,
+            max_tool_rounds=config.MAX_TOOL_ROUNDS, tool_retries=config.TOOL_RETRIES,
             system_prompt=config.SYSTEM_PROMPT,
             user_profile=agent_context(self.memory, self.skills),
         )
@@ -499,6 +499,7 @@ def apply_config(engines: Engines) -> None:
     a.thinking = config.LLM_THINKING
     a.max_tokens = config.LLM_MAX_TOKENS
     a.max_tool_rounds = config.MAX_TOOL_ROUNDS
+    a.tool_retries = config.TOOL_RETRIES
     t = engines.tts
     t.voice = config.TTS_VOICE
     t.speed = config.TTS_SPEED

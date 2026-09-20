@@ -160,10 +160,15 @@ def test_api_get_returns_values_schema_voices(api_env):
 
 def test_api_post_validates_writes_and_applies(api_env):
     with TestClient(_offline_app()) as c:
-        r = c.post("/api/config", json={"values": {"voice": {"tts_voice": "am_michael", "tts_speed": 1.2}}})
+        r = c.post("/api/config", json={"values": {
+            "voice": {"tts_voice": "am_michael", "tts_speed": 1.2},
+            "agent": {"tool_retries": 3},
+        }})
         assert r.status_code == 200, r.text
         assert r.json()["values"]["voice"]["tts_voice"] == "am_michael"
+        assert r.json()["values"]["agent"]["tool_retries"] == 3
         assert config.TTS_VOICE == "am_michael"
+        assert c.app.state.engines.agent.tool_retries == 3
         assert 'tts_voice = "am_michael"' in api_env.read_text()
         assert "tts_speed = 1.2" in api_env.read_text()
 

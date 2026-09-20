@@ -1,6 +1,9 @@
 import json
 import time
 
+import httpx
+import pytest
+
 from app import config, tools
 from app.agent import Agent, ReasoningDelta, ToolRound
 
@@ -53,6 +56,19 @@ class FakeResponse:
 
     def json(self):
         return self._body
+
+
+class FailingStreamResult:
+    def raise_for_status(self):
+        request = httpx.Request("POST", "http://x/v1/chat/completions")
+        response = httpx.Response(500, request=request)
+        raise httpx.HTTPStatusError("server error", request=request, response=response)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
 
 
 class FakeClient:
@@ -134,6 +150,41 @@ def test_reply_without_history_unchanged():
     list(agent.reply("hello", lambda n, a: "r"))
     messages = client.payloads[0]["messages"]
     assert [m["role"] for m in messages] == ["system", "user"]
+
+
+def test_reply_retries_clean_upstream_server_error():
+    class RetryClient:
+        def __init__(self):
+            self.calls = 0
+
+        def stream(self, method, url, json=None):
+            self.calls += 1
+            if self.calls == 1:
+                return FailingStreamResult()
+            return FakeStreamResult(_sse(_text_delta("recovered")))
+
+    client = RetryClient()
+    agent = Agent("http://x/v1", "m", "P", client=client)
+
+    assert list(agent.reply("hello", lambda n, a: "r")) == ["recovered"]
+    assert client.calls == 2
+
+
+def test_reply_respects_configured_tool_retry_limit():
+    class RetryClient:
+        def __init__(self):
+            self.calls = 0
+
+        def stream(self, method, url, json=None):
+            self.calls += 1
+            return FailingStreamResult()
+
+    client = RetryClient()
+    agent = Agent("http://x/v1", "m", "P", tool_retries=1, client=client)
+
+    with pytest.raises(httpx.HTTPStatusError):
+        list(agent.reply("hello", lambda n, a: "r"))
+    assert client.calls == 2
 
 
 def test_user_profile_appended_to_system_prompt():

@@ -480,6 +480,17 @@ SCHEMA = {
                 "step": 1,
                 "attr": "MAX_TOOL_ROUNDS",
             },
+            "tool_retries": {
+                "type": "int",
+                "label": "Tool retries",
+                "help": "Retry a clean language-model server error while processing a tool request."
+                        " Retries stop once any reply text has streamed.",
+                "apply": "now",
+                "min": 0,
+                "max": 5,
+                "step": 1,
+                "attr": "TOOL_RETRIES",
+            },
             "exec_timeout_s": {
                 "type": "int",
                 "label": "Exec timeout (s)",

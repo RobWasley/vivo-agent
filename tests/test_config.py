@@ -146,6 +146,7 @@ exec_timeout_s = 30
     assert cfg.KEEP_RECENT_TURNS == 2
     assert cfg.DREAM_INTERVAL_S == 7200
     assert cfg.MAX_TOOL_ROUNDS == 5
+    assert cfg.TOOL_RETRIES == 2
     assert cfg.EXEC_TIMEOUT == 30
     # untouched keys keep their defaults
     assert cfg.EXEC_MAX_TIMEOUT == 120

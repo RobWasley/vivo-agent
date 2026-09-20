@@ -1,6 +1,8 @@
-# Vivo — CPU-only Voice Agent
+# Vivo — Local Voice Agent for Docker + llama.cpp
 
-A CPU-only, single-container voice assistant. Talk to it hands-free through a browser — no GPU, no API keys, just one Docker container and a running llama.cpp server.
+Vivo is a CPU-only voice assistant that runs entirely on your machine in one Docker container. It listens through the browser mic, transcribes speech, calls a local LLM, and speaks back with a cloned or default voice — no GPU, no cloud API keys, and no custom backend required.
+
+Built for local-first personal assistance: quick conversations, file and shell access inside a workspace, memory, reminders, and tools for browsing and task execution without leaving the browser.
 
 ![vivo idle UI](vivo-minimal-idle.png)
 
@@ -28,7 +30,7 @@ FastAPI (uvicorn)
     ├── STT: faster-whisper small int8
     ├── Wake: transcript-matched wake phrase
     ├── Agent: streaming tool loop → llama.cpp v1
-    │     ├── 8 tools + spoken fillers during reasoning
+    │     ├── 21 built-in tools + spoken fillers during reasoning
     ├── Memory: named sessions, idle-time LLM compaction
     └── TTS: LuxTTS voice cloning (48 kHz), sentence-chunked streaming
 ```
@@ -117,7 +119,7 @@ The **voice** row is special: it lets you upload an audio file or record from th
 
 ## The Agent
 
-vivo runs a hand-rolled streaming tool loop — each utterance gets up to 8 tool-call rounds, parallel calls within a round, and errors are fed back to the model.
+vivo runs a hand-rolled streaming tool loop — each utterance gets up to 8 tool-call rounds, parallel calls within a round, and model feedback is used to recover from errors.
 
 | Tool | Description |
 |------|-------------|
@@ -132,7 +134,7 @@ vivo runs a hand-rolled streaming tool loop — each utterance gets up to 8 tool
 | `web_fetch` | Read a web page as markdown (Jina Reader) |
 | `set_reminder` / `list_reminders` | Schedule and query reminders |
 
-The system prompt enforces voice UX: summarise results naturally, never read raw output or code aloud, and say what you're doing before a slow tool call.
+The system prompt keeps the voice UX natural: summarise results clearly, never read raw output or code aloud, and announce what you are doing before a slow tool call.
 
 ## Wake Word
 
@@ -209,3 +211,7 @@ Per utterance, the server runs: **mic PCM (16 kHz) → VAD endpointing → STT �
 - **Down**: JSON events (`session`, `config`, `wake`, `start`, `end`, `transcript`, `agent_text`, `tool`, `reply_done`) plus binary int16 mono 48 kHz TTS audio chunks
 
 First audio starts while the LLM is still generating — typically 1–4 seconds earlier than waiting for the full reply. The WebSocket also supports session switching and manual wake via JSON messages.
+
+## License
+
+Licensed under the [MIT License](LICENSE). Use it, fork it, ship it.

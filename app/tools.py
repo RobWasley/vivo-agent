@@ -15,7 +15,9 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 import httpx
 
 from app import config
+from app.memory import MemoryStore
 from app import shell as shell_tool
+from app.skills import SkillStore
 from app import web as web_tool
 from app.reminders import ReminderStore, get_default_store, schedule_reminder
 
@@ -241,6 +243,45 @@ def read_file(path: str) -> str:
     return text.strip() or "(empty file)"
 
 
+def read_memory() -> str:
+    """Read the assistant's local memory outside the workspace sandbox."""
+    return MemoryStore(os.path.join(config.DATA_DIR, "memory.md")).read().strip() or "(empty memory)"
+
+
+def remember(fact: str) -> str:
+    """Persist a user-approved fact in the local memory store."""
+    fact = str(fact).strip()
+    if not fact:
+        return "error: memory fact is required"
+    MemoryStore(os.path.join(config.DATA_DIR, "memory.md")).observe(fact)
+    return "memory saved"
+
+
+def _skills() -> SkillStore:
+    return SkillStore(os.path.join(config.DATA_DIR, "skills"))
+
+
+def list_skills() -> str:
+    skills = _skills().list()
+    if not skills:
+        return "(no skills)"
+    return "\n".join(f"{item['name']}: {item['description']}" for item in skills)
+
+
+def read_skill(name: str) -> str:
+    return _skills().read(name)
+
+
+def save_skill(name: str, description: str, instructions: str) -> str:
+    action = _skills().save(name, description, instructions)
+    return f"skill {action}: {name}"
+
+
+def delete_skill(name: str) -> str:
+    _skills().delete(name)
+    return f"skill deleted: {name}"
+
+
 def write_file(path: str, content: str) -> str:
     target = _resolve(str(path))
     if target is None:
@@ -310,6 +351,80 @@ TOOLS: List[dict] = [
                 "type": "object",
                 "properties": {"path": {"type": "string"}},
                 "required": ["path"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "read_memory",
+            "description": "Read the complete local memory when the user asks what you remember.",
+            "parameters": {"type": "object", "properties": {}, "required": []},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "remember",
+            "description": (
+                "Save a durable fact only when the user explicitly asks you to remember it, "
+                "such as a preference or an ongoing project detail."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {"fact": {"type": "string"}},
+                "required": ["fact"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_skills",
+            "description": "List available task-specific skills and their descriptions.",
+            "parameters": {"type": "object", "properties": {}, "required": []},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "read_skill",
+            "description": "Load the full instructions for a named skill when it is relevant.",
+            "parameters": {
+                "type": "object",
+                "properties": {"name": {"type": "string"}},
+                "required": ["name"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "save_skill",
+            "description": (
+                "Create or update a task-specific skill when the user asks. "
+                "Use a concise description and complete Markdown instructions."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string", "description": "Lowercase hyphenated skill name."},
+                    "description": {"type": "string", "description": "One-line selection hint."},
+                    "instructions": {"type": "string", "description": "Full Markdown instructions."},
+                },
+                "required": ["name", "description", "instructions"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "delete_skill",
+            "description": "Delete a named skill only when the user explicitly asks.",
+            "parameters": {
+                "type": "object",
+                "properties": {"name": {"type": "string"}},
+                "required": ["name"],
             },
         },
     },
@@ -449,6 +564,20 @@ def execute(name: str, args: dict) -> str:
             func = lambda location="": weather(str(location))
         elif tool_name == "read_file":
             func = lambda path: read_file(str(path))
+        elif tool_name == "read_memory":
+            func = lambda: read_memory()
+        elif tool_name == "remember":
+            func = lambda fact: remember(str(fact))
+        elif tool_name == "list_skills":
+            func = lambda: list_skills()
+        elif tool_name == "read_skill":
+            func = lambda name: read_skill(str(name))
+        elif tool_name == "save_skill":
+            func = lambda name, description, instructions: save_skill(
+                str(name), str(description), str(instructions)
+            )
+        elif tool_name == "delete_skill":
+            func = lambda name: delete_skill(str(name))
         elif tool_name == "write_file":
             func = lambda path, content: write_file(str(path), str(content))
         elif tool_name == "list_dir":

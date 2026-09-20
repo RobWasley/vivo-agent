@@ -54,6 +54,7 @@ const el = {
   btnRenameSession: $("btn-rename-session"),
   btnDeleteSession: $("btn-delete-session"),
   btnSettings: $("btn-settings"),
+  btnSkills: $("btn-skills"),
   motionPreset: $("motion-preset"),
   settingsDlg: $("settings"),
   settingsBody: $("settings-body"),
@@ -61,6 +62,17 @@ const el = {
   btnSettingsSave: $("btn-settings-save"),
   btnSettingsClose: $("btn-settings-close"),
   btnSettingsX: $("btn-settings-x"),
+  skillsDlg: $("skills"),
+  skillsList: $("skills-list-items"),
+  skillsMsg: $("skills-msg"),
+  skillName: $("skill-name"),
+  skillDescription: $("skill-description"),
+  skillInstructions: $("skill-instructions"),
+  btnSkillNew: $("btn-skill-new"),
+  btnSkillSave: $("btn-skill-save"),
+  btnSkillDelete: $("btn-skill-delete"),
+  btnSkillsClose: $("btn-skills-close"),
+  btnSkillsX: $("btn-skills-x"),
   hint: $("hint"),
   telUplink: $("tel-uplink"),
   telPipeline: $("tel-pipeline"),
@@ -1541,6 +1553,136 @@ async function saveSettings() {
   }
 }
 
+/* ---------------- skills ---------------- */
+
+const skillsUi = { selected: "", items: [] };
+let skillsMsgTimer = null;
+
+function flashSkillsMsg(text, isError) {
+  el.skillsMsg.textContent = text;
+  el.skillsMsg.className = "settings-msg" + (isError ? " err" : " ok");
+  if (skillsMsgTimer) clearTimeout(skillsMsgTimer);
+  skillsMsgTimer = setTimeout(() => {
+    el.skillsMsg.textContent = "";
+    el.skillsMsg.className = "settings-msg";
+  }, 3000);
+}
+
+function resetSkillEditor() {
+  skillsUi.selected = "";
+  el.skillName.value = "";
+  el.skillDescription.value = "";
+  el.skillInstructions.value = "";
+  el.skillName.disabled = false;
+  el.btnSkillDelete.disabled = true;
+  renderSkillList();
+  el.skillName.focus();
+}
+
+function renderSkillList() {
+  el.skillsList.innerHTML = "";
+  if (!skillsUi.items.length) {
+    const empty = document.createElement("p");
+    empty.className = "skills-empty";
+    empty.textContent = "No skills yet.";
+    el.skillsList.appendChild(empty);
+    return;
+  }
+  for (const skill of skillsUi.items) {
+    const item = document.createElement("button");
+    item.type = "button";
+    item.className = "skill-list-item" + (skill.name === skillsUi.selected ? " active" : "");
+    const name = document.createElement("strong");
+    name.textContent = skill.name;
+    const description = document.createElement("span");
+    description.textContent = skill.description;
+    item.append(name, description);
+    item.addEventListener("click", () => loadSkill(skill.name));
+    el.skillsList.appendChild(item);
+  }
+}
+
+async function refreshSkills(selected = skillsUi.selected) {
+  const res = await fetch("/api/skills");
+  const j = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(j.detail || `HTTP ${res.status}`);
+  skillsUi.items = j.skills || [];
+  if (!skillsUi.items.some((skill) => skill.name === selected)) selected = "";
+  skillsUi.selected = selected;
+  renderSkillList();
+}
+
+async function openSkills() {
+  el.skillsDlg.showModal();
+  resetSkillEditor();
+  try {
+    await refreshSkills();
+  } catch (err) {
+    flashSkillsMsg(`could not load skills: ${err.message}`, true);
+  }
+}
+
+async function loadSkill(name) {
+  try {
+    const res = await fetch(`/api/skills/${encodeURIComponent(name)}`);
+    const skill = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(skill.detail || `HTTP ${res.status}`);
+    skillsUi.selected = skill.name;
+    el.skillName.value = skill.name;
+    el.skillDescription.value = skill.description;
+    el.skillInstructions.value = skill.instructions;
+    el.skillName.disabled = true;
+    el.btnSkillDelete.disabled = false;
+    renderSkillList();
+  } catch (err) {
+    flashSkillsMsg(`could not load skill: ${err.message}`, true);
+  }
+}
+
+async function saveSkill() {
+  if (!el.skillName.reportValidity() || !el.skillDescription.reportValidity() || !el.skillInstructions.reportValidity()) return;
+  const name = el.skillName.value.trim();
+  const body = {
+    name,
+    description: el.skillDescription.value.trim(),
+    instructions: el.skillInstructions.value.trim(),
+  };
+  el.btnSkillSave.disabled = true;
+  try {
+    const res = await fetch(`/api/skills/${encodeURIComponent(name)}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const j = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(j.detail || `HTTP ${res.status}`);
+    await refreshSkills(j.name);
+    await loadSkill(j.name);
+    flashSkillsMsg(`skill ${j.action}`);
+  } catch (err) {
+    flashSkillsMsg(`save failed: ${err.message}`, true);
+  } finally {
+    el.btnSkillSave.disabled = false;
+  }
+}
+
+async function deleteSkill() {
+  const name = skillsUi.selected;
+  if (!name || !confirm(`delete skill "${name}"?`)) return;
+  el.btnSkillDelete.disabled = true;
+  try {
+    const res = await fetch(`/api/skills/${encodeURIComponent(name)}`, { method: "DELETE" });
+    const j = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(j.detail || `HTTP ${res.status}`);
+    await refreshSkills();
+    resetSkillEditor();
+    flashSkillsMsg(`skill "${name}" deleted`);
+  } catch (err) {
+    flashSkillsMsg(`delete failed: ${err.message}`, true);
+    el.btnSkillDelete.disabled = false;
+  }
+}
+
 /* ---------------- wiring ---------------- */
 
 el.btnStart.addEventListener("click", async () => {
@@ -1617,6 +1759,17 @@ el.btnSettingsClose.addEventListener("click", closeSettings);
 el.btnSettingsX.addEventListener("click", closeSettings);
 el.settingsDlg.addEventListener("click", (ev) => {
   if (ev.target === el.settingsDlg) closeSettings(); // backdrop click
+});
+
+el.btnSkills.addEventListener("click", openSkills);
+el.btnSkillNew.addEventListener("click", resetSkillEditor);
+el.btnSkillSave.addEventListener("click", saveSkill);
+el.btnSkillDelete.addEventListener("click", deleteSkill);
+const closeSkills = () => el.skillsDlg.close();
+el.btnSkillsClose.addEventListener("click", closeSkills);
+el.btnSkillsX.addEventListener("click", closeSkills);
+el.skillsDlg.addEventListener("click", (ev) => {
+  if (ev.target === el.skillsDlg) closeSkills();
 });
 
 window.addEventListener("resize", resizeCanvas);

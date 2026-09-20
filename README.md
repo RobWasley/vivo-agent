@@ -13,7 +13,7 @@ A CPU-only, single-container voice assistant. Talk to it hands-free through a br
 - **Thinking mode** — the LLM reasons silently before answering; vivo speaks filler phrases while thinking
 - **Named sessions** — switch between conversations; each persists to disk
 - **Memory compaction** — older turns are summarised by the LLM in the background to keep context manageable
-- **8 built-in tools** — shell (sandboxed), files, web search, web fetch, time, weather, reminders
+- **14 built-in tools** — shell (sandboxed), files, memory, skills, web search, web fetch, time, weather, reminders
 - **Settings pane** — every config value is editable live from the UI; changes write `vivo.toml` automatically
 
 ## Architecture
@@ -123,6 +123,8 @@ vivo runs a hand-rolled streaming tool loop — each utterance gets up to 8 tool
 | `get_time` | Current date and time |
 | `weather` | Current weather via open-meteo (no API key) |
 | `read_file` / `write_file` / `list_dir` | Sandboxed to the workspace directory |
+| `read_memory` / `remember` | Read local memory or save an explicitly requested durable fact |
+| `list_skills` / `read_skill` / `save_skill` / `delete_skill` | Discover, use, create, update, or remove task-specific skills |
 | `exec` | Sandboxed shell commands (60 s default, 120 s max) |
 | `web_search` | DuckDuckGo search (≤5 results) |
 | `web_fetch` | Read a web page as markdown (Jina Reader) |

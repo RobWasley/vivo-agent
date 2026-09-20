@@ -117,6 +117,14 @@
         </svg>
         <span class="nav-label">Settings</span>
       </button>
+      <button class="nav-btn" id="btn-skills" title="Manage skills">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M5 4.5h9.5A2.5 2.5 0 0 1 17 7v13H7a2 2 0 0 1-2-2V4.5z"/>
+          <path d="M8 8h6M8 12h6M8 16h4"/>
+          <path d="m18.5 4.5 1 1"/>
+        </svg>
+        <span class="nav-label">Skills</span>
+      </button>
       <label class="nav-select" for="motion-preset">
         <span class="nav-select-label">Motion</span>
         <select id="motion-preset" title="Animation intensity">
@@ -189,6 +197,43 @@
       <span class="settings-spacer"></span>
       <button class="ghost" id="btn-settings-close">Close</button>
       <button class="primary" id="btn-settings-save">Save</button>
+    </div>
+  </dialog>
+
+  <dialog id="skills" class="skills-dialog">
+    <div class="settings-head">
+      <h2>Skills</h2>
+      <button class="ghost" id="btn-skills-x" title="Close">&times;</button>
+    </div>
+    <div class="skills-body">
+      <aside class="skills-list" aria-label="Saved skills">
+        <div class="skills-list-head">
+          <span>Saved skills</span>
+          <button class="ghost tiny" id="btn-skill-new" title="Create a skill">New</button>
+        </div>
+        <div id="skills-list-items" class="skills-list-items"></div>
+      </aside>
+      <form id="skills-editor" class="skills-editor">
+        <label>
+          <span>Name</span>
+          <input id="skill-name" required pattern="[a-z0-9]+(-[a-z0-9]+)*" autocomplete="off" placeholder="daily-summary">
+        </label>
+        <label>
+          <span>Description</span>
+          <input id="skill-description" required maxlength="240" autocomplete="off" placeholder="One-line selection hint">
+        </label>
+        <label class="skills-instructions">
+          <span>Instructions</span>
+          <textarea id="skill-instructions" required placeholder="# Daily summary&#10;&#10;Use two sentences."></textarea>
+        </label>
+      </form>
+    </div>
+    <div class="settings-foot">
+      <span class="settings-msg" id="skills-msg"></span>
+      <span class="settings-spacer"></span>
+      <button class="ghost" id="btn-skills-close">Close</button>
+      <button class="ghost danger-action" id="btn-skill-delete" disabled>Delete</button>
+      <button class="primary" id="btn-skill-save">Save</button>
     </div>
   </dialog>
 

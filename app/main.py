@@ -10,6 +10,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from app import config, config_schema, models, pipeline
+from app.skills import SkillStore
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
 log = logging.getLogger("vivo")
@@ -21,6 +22,12 @@ class ConfigPayload(BaseModel):
 
 class SessionRenamePayload(BaseModel):
     name: str
+
+
+class SkillPayload(BaseModel):
+    name: str
+    description: str
+    instructions: str
 
 
 @asynccontextmanager
@@ -84,6 +91,49 @@ async def trigger_dream(request: Request):
     engines = request.app.state.engines
     summary = await asyncio.to_thread(engines.dream_scheduler.trigger)
     return {"ok": True, "summary": summary}
+
+
+def _skills() -> SkillStore:
+    return SkillStore(Path(config.DATA_DIR) / "skills")
+
+
+@app.get("/api/skills")
+async def list_skills():
+    """List the compact metadata used to select task-specific skills."""
+    return {"skills": _skills().list()}
+
+
+@app.get("/api/skills/{name}")
+async def get_skill(name: str):
+    try:
+        return _skills().details(name)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.put("/api/skills/{name}")
+async def save_skill(name: str, body: SkillPayload):
+    """Create or update a skill. The URL and payload names must agree."""
+    if name.strip().lower() != body.name.strip().lower():
+        raise HTTPException(status_code=400, detail="skill name does not match the URL")
+    try:
+        action = _skills().save(body.name, body.description, body.instructions)
+        return {"ok": True, "action": action, "name": body.name.strip().lower()}
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.delete("/api/skills/{name}")
+async def delete_skill(name: str):
+    try:
+        _skills().delete(name)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"ok": True}
 
 
 @app.post("/api/voice")

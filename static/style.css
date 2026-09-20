@@ -975,6 +975,169 @@ button.ghost.tiny {
   color: var(--err);
 }
 
+/* ---------------- skills dialog ---------------- */
+
+.skills-dialog {
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius);
+  background: linear-gradient(180deg, #0d1524, #080e1a);
+  color: var(--text);
+  width: min(900px, 94vw);
+  max-height: 86vh;
+  padding: 0;
+  margin: 0;
+  box-shadow: var(--shadow);
+}
+
+.skills-dialog[open] {
+  display: flex;
+  flex-direction: column;
+}
+
+.skills-dialog::backdrop {
+  background: rgba(2, 6, 12, 0.72);
+  backdrop-filter: blur(4px);
+}
+
+.skills-body {
+  display: grid;
+  grid-template-columns: minmax(190px, 0.7fr) minmax(0, 1.6fr);
+  min-height: 390px;
+  overflow: hidden;
+}
+
+.skills-list {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  border-right: 1px solid var(--line);
+  background: rgba(4, 9, 17, 0.28);
+}
+
+.skills-list-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--line);
+  font-family: var(--font-mono);
+  font-size: 0.62rem;
+  font-weight: 500;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.skills-list-items {
+  overflow-y: auto;
+  padding: 6px;
+}
+
+.skill-list-item {
+  width: 100%;
+  display: grid;
+  gap: 4px;
+  padding: 10px;
+  border-color: transparent;
+  background: transparent;
+  text-align: left;
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+.skill-list-item strong {
+  overflow: hidden;
+  font-family: var(--font-mono);
+  font-size: 0.71rem;
+  font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text);
+}
+
+.skill-list-item span {
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  font-size: 0.7rem;
+  line-height: 1.35;
+  color: var(--muted);
+}
+
+.skill-list-item.active {
+  border-color: rgba(56, 189, 248, 0.38);
+  background: rgba(56, 189, 248, 0.1);
+}
+
+.skills-empty {
+  margin: 14px 8px;
+  font-size: 0.76rem;
+  color: var(--faint);
+}
+
+.skills-editor {
+  display: grid;
+  grid-template-rows: auto auto minmax(180px, 1fr);
+  gap: 14px;
+  min-width: 0;
+  padding: 18px;
+  overflow-y: auto;
+}
+
+.skills-editor label {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+
+.skills-editor label > span {
+  font-family: var(--font-mono);
+  font-size: 0.61rem;
+  font-weight: 500;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.skills-editor input,
+.skills-editor textarea {
+  width: 100%;
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: rgba(13, 22, 38, 0.6);
+  color: var(--text);
+  font: 0.8rem/1.45 var(--font-ui);
+  padding: 9px 10px;
+}
+
+.skills-editor textarea {
+  height: 100%;
+  min-height: 180px;
+  resize: vertical;
+  font-family: var(--font-mono);
+  font-size: 0.74rem;
+}
+
+.skills-editor input:focus,
+.skills-editor textarea:focus {
+  outline: none;
+  border-color: var(--line-strong);
+  box-shadow: 0 0 0 3px rgba(56, 189, 248, 0.12);
+}
+
+button.danger-action {
+  color: #fca5a5;
+}
+
+button.danger-action:hover {
+  border-color: rgba(248, 113, 113, 0.4);
+  background: rgba(64, 20, 26, 0.35);
+  color: #fecaca;
+}
+
 .ssection {
   margin-top: 18px;
 }
@@ -1212,6 +1375,32 @@ button.ghost.tiny {
 /* ---------------- responsive ---------------- */
 
 @media (max-width: 900px) {
+  .skills-body {
+    grid-template-columns: 1fr;
+    min-height: 0;
+    overflow-y: auto;
+  }
+
+  .skills-list {
+    max-height: 180px;
+    border-right: none;
+    border-bottom: 1px solid var(--line);
+  }
+
+  .skills-list-items {
+    display: flex;
+    gap: 5px;
+    overflow-x: auto;
+    overflow-y: hidden;
+  }
+
+  .skill-list-item {
+    flex: 0 0 180px;
+  }
+
+  .skills-editor {
+    min-height: 360px;
+  }
   .telemetry {
     flex-wrap: wrap;
   }

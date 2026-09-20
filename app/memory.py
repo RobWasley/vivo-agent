@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 from collections import Counter
+from datetime import date
 from pathlib import Path
 from typing import Iterable
 
@@ -31,7 +32,7 @@ class MemoryStore:
         with self.path.open("a", encoding="utf-8") as f:
             if not existing.endswith("\n"):
                 f.write("\n")
-            f.write(f"- {fact}\n")
+            f.write(f"- [{date.today().isoformat()}] {fact}\n")
 
     def _score(self, candidate: str) -> tuple[int, int, str]:
         text = candidate.lower()
@@ -47,7 +48,10 @@ class MemoryStore:
 
     def dream(self, candidates: Iterable[str] | None = None) -> str:
         items = list(candidates) if candidates is not None else self._read_facts()
-        items = [item.strip() for item in items if item and item.strip()]
+        items = [
+            item.strip() for item in items
+            if item and item.strip() and not self._is_transient(item)
+        ]
         if not items:
             return "No important memory yet."
 
@@ -63,6 +67,27 @@ class MemoryStore:
         keep = scored[:3]
         summary = "\n".join(f"- {item}" for item in keep)
         return summary
+
+    def consolidate(self) -> str:
+        """Keep only high-value facts in a small, dated on-disk index."""
+        summary = self.dream()
+        facts = [] if summary == "No important memory yet." else [
+            line[2:] for line in summary.splitlines()
+        ]
+
+        content = "# Memory\n"
+        if facts:
+            content += f"\n## {date.today().isoformat()}\n\n"
+            content += "\n".join(f"- {fact}" for fact in facts) + "\n"
+        temporary_path = self.path.with_suffix(self.path.suffix + ".tmp")
+        temporary_path.write_text(content, encoding="utf-8")
+        temporary_path.replace(self.path)
+        return summary
+
+    @staticmethod
+    def _is_transient(candidate: str) -> bool:
+        text = re.sub(r"^\[\d{4}-\d{2}-\d{2}\]\s*", "", candidate.strip())
+        return text.lower().startswith(("reminder fired:", "dream update:"))
 
     def _read_facts(self) -> list[str]:
         text = self.read()
@@ -107,10 +132,7 @@ class DreamScheduler:
         """
         self._set_state(True)
         try:
-            summary = self.store.dream()
-            if summary and summary != "No important memory yet.":
-                self.store.observe(f"Dream update: {summary.replace(chr(10), ' | ')}")
-            return summary
+            return self.store.consolidate()
         finally:
             self._set_state(False)
 

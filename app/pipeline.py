@@ -112,6 +112,7 @@ from app.agent import Agent, ReasoningDelta, ToolRound
 from app.conversation import SessionStore
 from app.memory import MemoryStore, DreamScheduler
 from app.reminders import ReminderScheduler, ReminderStore, get_default_scheduler, reminder_message
+from app.skills import SkillStore
 from app.stt import STT
 from app.tts import TTS
 from app.vad import VAD
@@ -163,7 +164,24 @@ def memory_context(memory: MemoryStore | None = None) -> str:
     summary = memory.dream()
     if summary == "No important memory yet.":
         return ""
-    return "Local memory: " + summary.replace("\n", " ")
+    return (
+        "Local memory index: " + summary.replace("\n", " ") +
+        " Use read_memory when the user asks about memories or needs more detail."
+    )
+
+
+def skills_context(skills: SkillStore | None = None) -> str:
+    """A compact index of available task-specific instructions for the prompt."""
+    if skills is None:
+        skills = SkillStore(path=os.path.join(config.DATA_DIR, "skills"))
+    return skills.index()
+
+
+def agent_context(memory: MemoryStore, skills: SkillStore) -> str:
+    """Build the dynamic, bounded context shared by all agent replies."""
+    return "\n".join(filter(None, (
+        user_profile(), memory_context(memory), skills_context(skills),
+    )))
 
 
 class SentenceChunker:
@@ -387,6 +405,7 @@ class Engines:
 
     def __init__(self) -> None:
         self.memory = MemoryStore(path=os.path.join(config.DATA_DIR, "memory.md"))
+        self.skills = SkillStore(path=os.path.join(config.DATA_DIR, "skills"))
         self.reminders = ReminderStore(path=os.path.join(config.DATA_DIR, "reminders.json"))
         self.reminder_scheduler = get_default_scheduler(on_due=self._handle_due_reminder)
         self.reminders = self.reminder_scheduler.store
@@ -418,7 +437,7 @@ class Engines:
             thinking=config.LLM_THINKING, max_tokens=config.LLM_MAX_TOKENS,
             max_tool_rounds=config.MAX_TOOL_ROUNDS,
             system_prompt=config.SYSTEM_PROMPT,
-            user_profile=user_profile() + ("\n" + memory_context(self.memory) if memory_context(self.memory) else ""),
+            user_profile=agent_context(self.memory, self.skills),
         )
         self.sessions = SessionStore(
             data_dir=config.DATA_DIR,
@@ -754,6 +773,7 @@ def _handle_utterance(
             for sentence in list(chunker.add(fixed_reply)) + chunker.flush():
                 enqueue(sentence)
         else:
+            engines.agent.user_profile = agent_context(engines.memory, engines.skills)
             filler = ThinkingFiller(session, gen, q, bench)
             filler.start()
             if wake_prefix is not None:
@@ -898,6 +918,7 @@ def _handle_text_utterance(
                 bench.accumulate("llm_blocked_on_tts", time.monotonic() - t0)
 
         msg_open = False
+        engines.agent.user_profile = agent_context(engines.memory, engines.skills)
         for item in engines.agent.reply(text, execute, history=conv.messages()):
             if not session.alive(gen):
                 break

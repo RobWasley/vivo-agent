@@ -50,6 +50,8 @@ tts_voice = "grace"
 tts_speed = 0.85
 # Silence appended after each spoken sentence.
 sentence_pause_s = 0.3
+# Load the speech engine and encode the active voice in the background after startup, reducing first-reply delay.
+warm_on_start = true
 # Hard split for long unpunctuated text. Shorter means the first audio arrives sooner at the cost of choppier phrasing.
 sentence_max_chars = 250
 # Split at clause punctuation (comma, semicolon, colon) once a sentence exceeds this length, so TTS can start before the whole sentence is generated. 0 disables it. Lower cuts first-audio latency; higher sounds smoother.

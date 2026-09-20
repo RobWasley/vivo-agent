@@ -120,6 +120,22 @@ def test_web_fetch_http_error(monkeypatch):
     assert "HTTP 404" in web.web_fetch("https://example.com")
 
 
+def test_web_fetch_retries_transient_server_error(monkeypatch):
+    calls = []
+
+    def fake_get(url, **kw):
+        calls.append(url)
+        if len(calls) == 1:
+            return httpx.Response(503, request=httpx.Request("GET", url))
+        return httpx.Response(
+            200, text="retry succeeded " * 10, request=httpx.Request("GET", url)
+        )
+
+    monkeypatch.setattr(httpx, "get", fake_get)
+    assert web.web_fetch("https://example.com").startswith(web.UNTRUSTED_BANNER)
+    assert len(calls) == 2
+
+
 def test_web_fetch_truncation(monkeypatch):
     def fake_get(url, **kw):
         if url.startswith("https://r.jina.ai/"):

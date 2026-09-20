@@ -125,6 +125,13 @@
         </svg>
         <span class="nav-label">Skills</span>
       </button>
+      <button class="nav-btn" id="btn-memory" title="Manage memory">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M5 4.5h14v15H5z"/>
+          <path d="M8.5 8h7M8.5 12h7M8.5 16h4"/>
+        </svg>
+        <span class="nav-label">Memory</span>
+      </button>
       <label class="nav-select" for="motion-preset">
         <span class="nav-select-label">Motion</span>
         <select id="motion-preset" title="Animation intensity">
@@ -234,6 +241,40 @@
       <button class="ghost" id="btn-skills-close">Close</button>
       <button class="ghost danger-action" id="btn-skill-delete" disabled>Delete</button>
       <button class="primary" id="btn-skill-save">Save</button>
+    </div>
+  </dialog>
+
+  <dialog id="memory" class="skills-dialog">
+    <div class="settings-head">
+      <h2>Memory</h2>
+      <button class="ghost" id="btn-memory-x" title="Close">&times;</button>
+    </div>
+    <div class="skills-body">
+      <aside class="skills-list" aria-label="Memory archive">
+        <div class="skills-list-head">
+          <span>Archive</span>
+          <button class="ghost tiny" id="btn-memory-new" title="Add a memory fact">New</button>
+        </div>
+        <div id="memory-list-items" class="skills-list-items"></div>
+      </aside>
+      <div class="skills-editor">
+        <label class="skills-instructions">
+          <span>Fact</span>
+          <textarea id="memory-text" required placeholder="A durable fact worth retaining"></textarea>
+        </label>
+        <label class="memory-core-toggle">
+          <input id="memory-core" type="checkbox">
+          <span>Keep in core memory</span>
+        </label>
+      </div>
+    </div>
+    <div class="settings-foot">
+      <span class="settings-msg" id="memory-msg"></span>
+      <span class="settings-spacer"></span>
+      <button class="ghost" id="btn-memory-dream">Dream</button>
+      <button class="ghost" id="btn-memory-close">Close</button>
+      <button class="ghost danger-action" id="btn-memory-delete" disabled>Delete</button>
+      <button class="primary" id="btn-memory-save">Save</button>
     </div>
   </dialog>
 

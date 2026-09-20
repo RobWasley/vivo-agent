@@ -55,6 +55,7 @@ const el = {
   btnDeleteSession: $("btn-delete-session"),
   btnSettings: $("btn-settings"),
   btnSkills: $("btn-skills"),
+  btnMemory: $("btn-memory"),
   motionPreset: $("motion-preset"),
   settingsDlg: $("settings"),
   settingsBody: $("settings-body"),
@@ -73,6 +74,17 @@ const el = {
   btnSkillDelete: $("btn-skill-delete"),
   btnSkillsClose: $("btn-skills-close"),
   btnSkillsX: $("btn-skills-x"),
+  memoryDlg: $("memory"),
+  memoryList: $("memory-list-items"),
+  memoryMsg: $("memory-msg"),
+  memoryText: $("memory-text"),
+  memoryCore: $("memory-core"),
+  btnMemoryNew: $("btn-memory-new"),
+  btnMemorySave: $("btn-memory-save"),
+  btnMemoryDelete: $("btn-memory-delete"),
+  btnMemoryDream: $("btn-memory-dream"),
+  btnMemoryClose: $("btn-memory-close"),
+  btnMemoryX: $("btn-memory-x"),
   hint: $("hint"),
   telUplink: $("tel-uplink"),
   telPipeline: $("tel-pipeline"),
@@ -412,7 +424,7 @@ function handleServerJson(m) {
       addEntry("hint", `⏰ reminder: ${escapeHtml(reminderText)}`);
       return;
     case "tool":
-      addToolEntry(m.name, m.result);
+      addToolEntry(m.name, m.result, m.status, m.duration_ms);
       break;
     case "barge_ack":
       S.dropAudio = true;
@@ -461,7 +473,7 @@ function addEntry(cls, html, time) {
   return d;
 }
 
-function addToolEntry(name, result) {
+function addToolEntry(name, result, status = "ok", durationMs = null) {
   const d = document.createElement("details");
   d.className = "entry entry-tool entry-tool-details";
 
@@ -485,7 +497,8 @@ function addToolEntry(name, result) {
 
   const toolHint = document.createElement("span");
   toolHint.className = "tool-hint";
-  toolHint.textContent = "click to expand";
+  const timing = Number.isFinite(Number(durationMs)) ? ` ${Math.round(Number(durationMs))}ms` : "";
+  toolHint.textContent = `${status === "error" ? "failed" : "done"}${timing} · click to expand`;
   summary.appendChild(toolHint);
 
   const body = document.createElement("div");
@@ -1683,6 +1696,140 @@ async function deleteSkill() {
   }
 }
 
+/* ---------------- memory ---------------- */
+
+const memoryUi = { selected: "", facts: [] };
+let memoryMsgTimer = null;
+
+function flashMemoryMsg(text, isError) {
+  el.memoryMsg.textContent = text;
+  el.memoryMsg.className = "settings-msg" + (isError ? " err" : " ok");
+  if (memoryMsgTimer) clearTimeout(memoryMsgTimer);
+  memoryMsgTimer = setTimeout(() => {
+    el.memoryMsg.textContent = "";
+    el.memoryMsg.className = "settings-msg";
+  }, 3000);
+}
+
+function resetMemoryEditor() {
+  memoryUi.selected = "";
+  el.memoryText.value = "";
+  el.memoryCore.checked = false;
+  el.btnMemoryDelete.disabled = true;
+  renderMemoryList();
+  el.memoryText.focus();
+}
+
+function renderMemoryList() {
+  el.memoryList.innerHTML = "";
+  if (!memoryUi.facts.length) {
+    const empty = document.createElement("p");
+    empty.className = "skills-empty";
+    empty.textContent = "No saved facts.";
+    el.memoryList.appendChild(empty);
+    return;
+  }
+  for (const fact of memoryUi.facts) {
+    const item = document.createElement("button");
+    item.type = "button";
+    item.className = "skill-list-item" + (fact.id === memoryUi.selected ? " active" : "");
+    const text = document.createElement("strong");
+    text.textContent = fact.text;
+    const meta = document.createElement("span");
+    meta.textContent = `${fact.date}${fact.core ? " · core" : " · archive"}`;
+    item.append(text, meta);
+    item.addEventListener("click", () => loadMemory(fact.id));
+    el.memoryList.appendChild(item);
+  }
+}
+
+async function refreshMemory(selected = memoryUi.selected) {
+  const res = await fetch("/api/memory");
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
+  memoryUi.facts = data.facts || [];
+  if (!memoryUi.facts.some((fact) => fact.id === selected)) selected = "";
+  memoryUi.selected = selected;
+  renderMemoryList();
+}
+
+async function openMemory() {
+  el.memoryDlg.showModal();
+  resetMemoryEditor();
+  try {
+    await refreshMemory();
+  } catch (err) {
+    flashMemoryMsg(`could not load memory: ${err.message}`, true);
+  }
+}
+
+function loadMemory(id) {
+  const fact = memoryUi.facts.find((item) => item.id === id);
+  if (!fact) return;
+  memoryUi.selected = fact.id;
+  el.memoryText.value = fact.text;
+  el.memoryCore.checked = !!fact.core;
+  el.btnMemoryDelete.disabled = false;
+  renderMemoryList();
+}
+
+async function saveMemory() {
+  const text = el.memoryText.value.trim();
+  if (!text) return el.memoryText.reportValidity();
+  const body = { text, core: el.memoryCore.checked };
+  const isNew = !memoryUi.selected;
+  const endpoint = isNew ? "/api/memory" : `/api/memory/${encodeURIComponent(memoryUi.selected)}`;
+  el.btnMemorySave.disabled = true;
+  try {
+    const res = await fetch(endpoint, {
+      method: isNew ? "POST" : "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
+    await refreshMemory(data.fact.id);
+    loadMemory(data.fact.id);
+    flashMemoryMsg(isNew ? "fact saved" : "fact updated");
+  } catch (err) {
+    flashMemoryMsg(`save failed: ${err.message}`, true);
+  } finally {
+    el.btnMemorySave.disabled = false;
+  }
+}
+
+async function deleteMemory() {
+  const id = memoryUi.selected;
+  if (!id || !confirm("delete this memory fact?")) return;
+  el.btnMemoryDelete.disabled = true;
+  try {
+    const res = await fetch(`/api/memory/${encodeURIComponent(id)}`, { method: "DELETE" });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
+    await refreshMemory();
+    resetMemoryEditor();
+    flashMemoryMsg("fact deleted");
+  } catch (err) {
+    flashMemoryMsg(`delete failed: ${err.message}`, true);
+    el.btnMemoryDelete.disabled = false;
+  }
+}
+
+async function dreamMemory() {
+  el.btnMemoryDream.disabled = true;
+  try {
+    const res = await fetch("/api/dream", { method: "POST" });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
+    await refreshMemory(memoryUi.selected);
+    flashMemoryMsg(data.summary === "No important memory yet." ? "core memory cleared" : "core memory refreshed");
+  } catch (err) {
+    flashMemoryMsg(`dream failed: ${err.message}`, true);
+  } finally {
+    el.btnMemoryDream.disabled = false;
+  }
+}
+
 /* ---------------- wiring ---------------- */
 
 el.btnStart.addEventListener("click", async () => {
@@ -1770,6 +1917,18 @@ el.btnSkillsClose.addEventListener("click", closeSkills);
 el.btnSkillsX.addEventListener("click", closeSkills);
 el.skillsDlg.addEventListener("click", (ev) => {
   if (ev.target === el.skillsDlg) closeSkills();
+});
+
+el.btnMemory.addEventListener("click", openMemory);
+el.btnMemoryNew.addEventListener("click", resetMemoryEditor);
+el.btnMemorySave.addEventListener("click", saveMemory);
+el.btnMemoryDelete.addEventListener("click", deleteMemory);
+el.btnMemoryDream.addEventListener("click", dreamMemory);
+const closeMemory = () => el.memoryDlg.close();
+el.btnMemoryClose.addEventListener("click", closeMemory);
+el.btnMemoryX.addEventListener("click", closeMemory);
+el.memoryDlg.addEventListener("click", (ev) => {
+  if (ev.target === el.memoryDlg) closeMemory();
 });
 
 window.addEventListener("resize", resizeCanvas);

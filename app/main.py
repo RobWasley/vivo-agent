@@ -30,6 +30,11 @@ class SkillPayload(BaseModel):
     instructions: str
 
 
+class MemoryPayload(BaseModel):
+    text: str
+    core: bool = False
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await asyncio.to_thread(models.ensure_models, config.MODEL_DIR, config.DATA_DIR)
@@ -44,11 +49,13 @@ app = FastAPI(title="vivo", lifespan=lifespan)
 
 @app.get("/health")
 async def health():
+    engines = app.state.engines
     return {
         "status": "ok",
         "llm_base_url": config.LLM_BASE_URL,
         "llm_model": config.LLM_MODEL,
         "model_dir": config.MODEL_DIR,
+        "tts_warm_state": engines.tts.warm_state,
     }
 
 
@@ -91,6 +98,44 @@ async def trigger_dream(request: Request):
     engines = request.app.state.engines
     summary = await asyncio.to_thread(engines.dream_scheduler.trigger)
     return {"ok": True, "summary": summary}
+
+
+@app.get("/api/memory")
+async def get_memory(request: Request):
+    facts = request.app.state.engines.memory.list()
+    return {"facts": facts, "core_count": sum(item["core"] for item in facts)}
+
+
+@app.post("/api/memory")
+async def add_memory(body: MemoryPayload, request: Request):
+    try:
+        fact = request.app.state.engines.memory.add(body.text, core=body.core)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"ok": True, "fact": fact}
+
+
+@app.put("/api/memory/{fact_id}")
+async def update_memory(fact_id: str, body: MemoryPayload, request: Request):
+    store = request.app.state.engines.memory
+    try:
+        fact = store.update(fact_id, body.text)
+        if fact["core"] != body.core:
+            fact = store.set_core(fact_id, body.core)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="unknown memory fact") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"ok": True, "fact": fact}
+
+
+@app.delete("/api/memory/{fact_id}")
+async def delete_memory(fact_id: str, request: Request):
+    try:
+        request.app.state.engines.memory.delete(fact_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="unknown memory fact") from exc
+    return {"ok": True}
 
 
 def _skills() -> SkillStore:

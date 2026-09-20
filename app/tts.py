@@ -59,6 +59,7 @@ class TTS:
         self._enc_voice: Optional[str] = None
         self._enc_lock = threading.RLock()
         self.load_time: Optional[float] = None
+        self.warm_state = "idle"
 
     # --- voices (reference clips) -------------------------------------------
 
@@ -168,10 +169,13 @@ class TTS:
     def prime(self, name: str | None = None) -> None:
         """Load the engine and encode a clip now (run off the request path so
         the first utterance in the new voice is instant)."""
+        self.warm_state = "warming"
         try:
             engine = self._load()
             self._prompt_for(engine, name)
+            self.warm_state = "ready"
         except Exception:  # noqa: BLE001 - a failed prime just costs first use
+            self.warm_state = "failed"
             log.exception("could not pre-encode voice %r", name)
 
     # --- synthesis ----------------------------------------------------------------

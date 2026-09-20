@@ -63,7 +63,8 @@ Protocol (JSON text frames unless noted):
                                    message (transcript line + caption reset on
                                    the client); `filler` marks a thinking
                                    filler phrase
-    {"type":"tool","name","result"} a tool was executed
+    {"type":"tool","name","result","status","duration_ms"[,"error_kind"]}
+                                  a tool was executed; status is `ok` or `error`
     binary                    int16 mono TTS PCM (one chunk per sentence,
                                   sample rate in config.audio.tts_sample_rate)
     {"type":"barge_ack"}
@@ -158,10 +159,10 @@ def user_profile() -> str:
 
 
 def memory_context(memory: MemoryStore | None = None) -> str:
-    """A compact summary of the local memory file for the model prompt."""
+    """Inject the curated core-memory tier, not the detailed archive."""
     if memory is None:
         memory = MemoryStore(path=os.path.join(config.DATA_DIR, "memory.md"))
-    summary = memory.dream()
+    summary = memory.core_summary()
     if summary == "No important memory yet.":
         return ""
     return (
@@ -432,6 +433,8 @@ class Engines:
             data_dir=config.DATA_DIR,
             cpu_threads=config.TTS_CPU_THREADS,
         )
+        if config.WARM_TTS_ON_START:
+            threading.Thread(target=self.tts.prime, daemon=True, name="tts-warmup").start()
         self.agent = Agent(
             config.LLM_BASE_URL, config.LLM_MODEL, config.PERSONA, tools=tools.TOOLS,
             thinking=config.LLM_THINKING, max_tokens=config.LLM_MAX_TOKENS,
@@ -501,9 +504,14 @@ def apply_config(engines: Engines) -> None:
     a.max_tool_rounds = config.MAX_TOOL_ROUNDS
     a.tool_retries = config.TOOL_RETRIES
     t = engines.tts
+    previous_voice = t.voice
     t.voice = config.TTS_VOICE
     t.speed = config.TTS_SPEED
     t.sentence_pause = config.TTS_SENTENCE_PAUSE
+    if config.WARM_TTS_ON_START and hasattr(t, "prime") and (
+        previous_voice != t.voice or getattr(t, "warm_state", "idle") != "ready"
+    ):
+        threading.Thread(target=t.prime, daemon=True, name="tts-warmup").start()
     s = engines.stt
     s.language = config.STT_LANGUAGE
     s.beam_size = config.STT_BEAM_SIZE
@@ -517,6 +525,33 @@ def apply_config(engines: Engines) -> None:
     engines.wake.update(
         config.WAKE_PHRASE, config.WAKE_END_PHRASES, config.WAKE_SESSION_TIMEOUT_S
     )
+
+
+def execute_tool(name: str, args: dict, session: "VoiceSession") -> tuple[str, dict]:
+    """Run a tool and return its model result plus safe observability metadata."""
+    started = time.monotonic()
+    result = session.execute_conversation_tool(name, args)
+    if result is None:
+        result = tools.execute(name, args)
+    result = str(result)
+    failed = result.startswith("error:")
+    error_kind = ""
+    if failed:
+        error_kind = result[6:].split("(", 1)[0].strip().lower().replace(" ", "_")
+    event = {
+        "type": "tool",
+        "name": name,
+        "result": result,
+        "status": "error" if failed else "ok",
+        "duration_ms": round((time.monotonic() - started) * 1000),
+    }
+    if error_kind:
+        event["error_kind"] = error_kind
+    log.info(
+        "tool name=%s status=%s duration_ms=%d error_kind=%s",
+        name, event["status"], event["duration_ms"], error_kind or "none",
+    )
+    return result, event
 
 
 class VoiceSession:
@@ -813,12 +848,9 @@ def _handle_utterance(
             bench.accumulate("llm_blocked_on_tts", time.monotonic() - t0)
 
         def execute(name: str, args: dict) -> str:
-            result = session.execute_conversation_tool(name, args)
-            if result is None:
-                result = tools.execute(name, args)
-            log.info("tool %s -> %s", name, str(result)[:120])
+            result, event = execute_tool(name, args, session)
             if session.alive(gen):
-                session.send({"type": "tool", "name": name, "result": str(result)})
+                session.send(event)
             return result
 
         # Message boundaries for the client transcript: the first delta of a
@@ -951,12 +983,9 @@ def _handle_text_utterance(
             return
 
         def execute(name: str, args: dict) -> str:
-            result = session.execute_conversation_tool(name, args)
-            if result is None:
-                result = tools.execute(name, args)
-            log.info("tool %s -> %s", name, str(result)[:120])
+            result, event = execute_tool(name, args, session)
             if session.alive(gen):
-                session.send({"type": "tool", "name": name, "result": str(result)})
+                session.send(event)
             return result
 
         if speech:

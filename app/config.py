@@ -145,6 +145,7 @@ def _emit() -> None:
     g["TTS_VOICE"] = _get("voice", "tts_voice", "TTS_VOICE", "default")
     g["TTS_SPEED"] = _get("voice", "tts_speed", "TTS_SPEED", 1.0, float)
     g["TTS_SENTENCE_PAUSE"] = _get("voice", "sentence_pause_s", "TTS_SENTENCE_PAUSE", 0.2, float)
+    g["WARM_TTS_ON_START"] = _get("voice", "warm_on_start", "WARM_TTS_ON_START", True, bool)
     # SentenceChunker hard-split threshold (chars) when no punctuation boundary is
     # found: bounds first-audio latency on punctuation-poor LLM output (T014).
     g["SENTENCE_MAX_CHARS"] = _get("voice", "sentence_max_chars", "SENTENCE_MAX_CHARS", 90, int)
@@ -271,6 +272,7 @@ def effective_dict() -> dict:
             "tts_voice": g["TTS_VOICE"],
             "tts_speed": g["TTS_SPEED"],
             "sentence_pause_s": g["TTS_SENTENCE_PAUSE"],
+            "warm_on_start": g["WARM_TTS_ON_START"],
             "sentence_max_chars": g["SENTENCE_MAX_CHARS"],
             "clause_max_chars": g["CLAUSE_MAX_CHARS"],
             "tts_queue_size": g["TTS_QUEUE_SIZE"],

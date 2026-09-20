@@ -1,23 +1,28 @@
 from __future__ import annotations
 
 import re
-from collections import Counter
 from datetime import date
+import json
 from pathlib import Path
 from typing import Iterable
+from uuid import uuid4
 
 
 DEFAULT_MEMORY_PATH = "data/memory.md"
 
 
 class MemoryStore:
-    """Simple local memory file with a lightweight 'dream' summariser."""
+    """Local archive with a small curated core-memory Markdown index."""
 
     def __init__(self, path: str = DEFAULT_MEMORY_PATH):
         self.path = Path(path)
+        self.facts_path = self.path.with_suffix(".json")
         self.path.parent.mkdir(parents=True, exist_ok=True)
         if not self.path.exists():
             self.path.write_text("# Memory\n\n", encoding="utf-8")
+        if not self.facts_path.exists():
+            self._save_facts(self._legacy_facts())
+            self._write_index()
 
     def read(self) -> str:
         return self.path.read_text(encoding="utf-8")
@@ -26,13 +31,76 @@ class MemoryStore:
         fact = fact.strip()
         if not fact:
             return
-        existing = self.read()
-        if fact.lower() in existing.lower():
+        facts = self._facts()
+        if any(fact.lower() == item["text"].lower() for item in facts):
             return
-        with self.path.open("a", encoding="utf-8") as f:
-            if not existing.endswith("\n"):
-                f.write("\n")
-            f.write(f"- [{date.today().isoformat()}] {fact}\n")
+        facts.append(self._new_fact(fact, core=True))
+        self._save_facts(facts)
+        self._write_index(facts)
+
+    def list(self) -> list[dict[str, str]]:
+        return self._facts()
+
+    def add(self, fact: str, core: bool = False) -> dict[str, str]:
+        fact = fact.strip()
+        if not fact:
+            raise ValueError("memory fact is required")
+        if len(fact) > 500:
+            raise ValueError("memory fact must be at most 500 characters")
+        facts = self._facts()
+        if any(fact.lower() == item["text"].lower() for item in facts):
+            raise ValueError("memory fact already exists")
+        item = self._new_fact(fact, core=core)
+        facts.append(item)
+        self._save_facts(facts)
+        self._write_index(facts)
+        return item
+
+    def update(self, fact_id: str, text: str) -> dict[str, str]:
+        text = text.strip()
+        if not text:
+            raise ValueError("memory fact is required")
+        if len(text) > 500:
+            raise ValueError("memory fact must be at most 500 characters")
+        facts = self._facts()
+        for item in facts:
+            if item["id"] == fact_id:
+                item["text"] = text
+                self._save_facts(facts)
+                self._write_index(facts)
+                return item
+        raise KeyError(fact_id)
+
+    def delete(self, fact_id: str) -> None:
+        facts = self._facts()
+        remaining = [item for item in facts if item["id"] != fact_id]
+        if len(remaining) == len(facts):
+            raise KeyError(fact_id)
+        self._save_facts(remaining)
+        self._write_index(remaining)
+
+    def set_core(self, fact_id: str, core: bool) -> dict[str, str]:
+        facts = self._facts()
+        for item in facts:
+            if item["id"] == fact_id:
+                item["core"] = bool(core)
+                self._save_facts(facts)
+                self._write_index(facts)
+                return item
+        raise KeyError(fact_id)
+
+    def core_summary(self) -> str:
+        facts = [item["text"] for item in self._facts() if item["core"]]
+        return "\n".join(f"- {fact}" for fact in facts) or "No important memory yet."
+
+    def archive_text(self) -> str:
+        facts = self._facts()
+        if not facts:
+            return "(no saved memory)"
+        return "\n".join(
+            f"- [{item['date']}] {item['text']}" + (" (core)" if item["core"] else "")
+            for item in facts
+        )
 
     def _score(self, candidate: str) -> tuple[int, int, str]:
         text = candidate.lower()
@@ -47,7 +115,7 @@ class MemoryStore:
         return score, count, candidate
 
     def dream(self, candidates: Iterable[str] | None = None) -> str:
-        items = list(candidates) if candidates is not None else self._read_facts()
+        items = list(candidates) if candidates is not None else [item["text"] for item in self._facts()]
         items = [
             item.strip() for item in items
             if item and item.strip() and not self._is_transient(item)
@@ -69,19 +137,16 @@ class MemoryStore:
         return summary
 
     def consolidate(self) -> str:
-        """Keep only high-value facts in a small, dated on-disk index."""
+        """Promote high-value archive facts into the small core-memory index."""
         summary = self.dream()
-        facts = [] if summary == "No important memory yet." else [
+        selected = set() if summary == "No important memory yet." else {
             line[2:] for line in summary.splitlines()
-        ]
-
-        content = "# Memory\n"
-        if facts:
-            content += f"\n## {date.today().isoformat()}\n\n"
-            content += "\n".join(f"- {fact}" for fact in facts) + "\n"
-        temporary_path = self.path.with_suffix(self.path.suffix + ".tmp")
-        temporary_path.write_text(content, encoding="utf-8")
-        temporary_path.replace(self.path)
+        }
+        facts = self._facts()
+        for item in facts:
+            item["core"] = item["text"] in selected
+        self._save_facts(facts)
+        self._write_index(facts)
         return summary
 
     @staticmethod
@@ -89,16 +154,62 @@ class MemoryStore:
         text = re.sub(r"^\[\d{4}-\d{2}-\d{2}\]\s*", "", candidate.strip())
         return text.lower().startswith(("reminder fired:", "dream update:"))
 
-    def _read_facts(self) -> list[str]:
+    def _legacy_facts(self) -> list[dict[str, str]]:
         text = self.read()
-        lines = []
+        facts = []
         for line in text.splitlines():
             line = line.strip()
             if line.startswith("#") or not line:
                 continue
             if line.startswith("- "):
-                lines.append(line[2:].strip())
-        return lines
+                value = line[2:].strip()
+                if not self._is_transient(value):
+                    facts.append(self._new_fact(
+                        re.sub(r"^\[\d{4}-\d{2}-\d{2}\]\s*", "", value), core=True
+                    ))
+        return facts
+
+    def _facts(self) -> list[dict[str, str]]:
+        try:
+            raw = json.loads(self.facts_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return []
+        if not isinstance(raw, list):
+            return []
+        return [
+            {
+                "id": str(item["id"]),
+                "text": str(item["text"]),
+                "date": str(item["date"]),
+                "core": bool(item.get("core", False)),
+            }
+            for item in raw
+            if isinstance(item, dict) and all(key in item for key in ("id", "text", "date"))
+        ]
+
+    @staticmethod
+    def _new_fact(text: str, core: bool = False) -> dict[str, str]:
+        return {"id": uuid4().hex, "text": text, "date": date.today().isoformat(), "core": core}
+
+    def _save_facts(self, facts: list[dict[str, str]]) -> None:
+        temporary_path = self.facts_path.with_suffix(".tmp")
+        temporary_path.write_text(json.dumps(facts, indent=2) + "\n", encoding="utf-8")
+        temporary_path.replace(self.facts_path)
+
+    def _write_index(self, facts: list[dict[str, str]] | None = None) -> None:
+        facts = facts if facts is not None else self._facts()
+        facts = [item for item in facts if item["core"]]
+        content = "# Memory\n"
+        if facts:
+            groups: dict[str, list[str]] = {}
+            for item in facts:
+                groups.setdefault(item["date"], []).append(item["text"])
+            for fact_date, items in groups.items():
+                content += f"\n## {fact_date}\n\n"
+                content += "\n".join(f"- {item}" for item in items) + "\n"
+        temporary_path = self.path.with_suffix(self.path.suffix + ".tmp")
+        temporary_path.write_text(content, encoding="utf-8")
+        temporary_path.replace(self.path)
 
 
 class DreamScheduler:

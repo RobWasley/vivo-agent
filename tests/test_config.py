@@ -118,7 +118,7 @@ exec_timeout_s = 30
     assert cfg.LLM_MAX_TOKENS == 250
     assert cfg.PERSONA == "Custom persona."
     assert cfg.SYSTEM_PROMPT == "Be very brief."
-    assert cfg.USER_NAME == ""
+    assert cfg.USER_NAME == "Rob"
     assert cfg.USER_LOCATION == "Bristol, UK"
     assert cfg.USER_TIMEZONE == "Europe/London"
     assert cfg.USER_UNITS == "imperial"
@@ -128,6 +128,7 @@ exec_timeout_s = 30
     assert cfg.TTS_VOICE == "af_bella"
     assert cfg.TTS_SPEED == 1.2
     assert cfg.TTS_SENTENCE_PAUSE == 0.5
+    assert cfg.WARM_TTS_ON_START is True
     assert cfg.SENTENCE_MAX_CHARS == 60
     assert cfg.TTS_QUEUE_SIZE == 4
     assert cfg.STT_MODEL == "base"

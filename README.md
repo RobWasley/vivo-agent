@@ -13,7 +13,8 @@ A CPU-only, single-container voice assistant. Talk to it hands-free through a br
 - **Thinking mode** — the LLM reasons silently before answering; vivo speaks filler phrases while thinking
 - **Named sessions** — switch between conversations; each persists to disk
 - **Memory compaction** — older turns are summarised by the LLM in the background to keep context manageable
-- **19 built-in tools** — shell (sandboxed), files, memory, skills, conversations, web search, web fetch, time, weather, reminders
+- **Two-tier memory** — `data/memory.md` holds curated core facts for the prompt; `data/memory.json` keeps the editable local archive
+- **21 built-in tools** — shell (sandboxed), files, memory, skills, conversations, web search, web fetch, time, weather, reminders
 - **Settings pane** — every config value is editable live from the UI; changes write `vivo.toml` automatically
 
 ## Architecture

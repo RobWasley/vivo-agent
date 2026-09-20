@@ -1138,6 +1138,20 @@ button.danger-action:hover {
   color: #fecaca;
 }
 
+.memory-core-toggle {
+  display: flex !important;
+  grid-template-columns: none !important;
+  align-items: center;
+  gap: 9px !important;
+  font-size: 0.78rem;
+  color: var(--muted);
+}
+
+.memory-core-toggle input {
+  width: auto;
+  accent-color: var(--accent);
+}
+
 .ssection {
   margin-top: 18px;
 }

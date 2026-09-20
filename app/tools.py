@@ -69,6 +69,7 @@ WMO_CODES = {
 }
 
 MAX_READ_CHARS = 4000
+HTTP_RETRIES = 1
 
 
 @dataclass
@@ -163,13 +164,30 @@ def get_time() -> str:
 _GEO_CACHE: dict[str, tuple[float, float]] = {}
 
 
+def _http_get_with_retry(url: str, **kwargs) -> httpx.Response:
+    """Retry only transient network and server failures once."""
+    last_error = None
+    for attempt in range(HTTP_RETRIES + 1):
+        try:
+            response = httpx.get(url, **kwargs)
+        except httpx.HTTPError as exc:
+            last_error = exc
+            if attempt < HTTP_RETRIES:
+                continue
+            raise
+        if getattr(response, "status_code", 200) >= 500 and attempt < HTTP_RETRIES:
+            continue
+        return response
+    raise last_error  # pragma: no cover - loop always returns or raises
+
+
 def _geocode(place: str) -> tuple[float, float] | None:
     """Place name -> (lat, lon) via open-meteo's free geocoding API (no key).
     Successful lookups are cached for the process lifetime."""
     key = place.strip().lower()
     if key in _GEO_CACHE:
         return _GEO_CACHE[key]
-    r = httpx.get(
+    r = _http_get_with_retry(
         "https://geocoding-api.open-meteo.com/v1/search",
         params={"name": place.strip(), "count": 1},
         timeout=10.0,
@@ -209,7 +227,7 @@ def weather(location: str = "") -> str:
     if imperial:
         params["temperature_unit"] = "fahrenheit"
         params["wind_speed_unit"] = "mph"
-    r = httpx.get("https://api.open-meteo.com/v1/forecast", params=params, timeout=15.0)
+    r = _http_get_with_retry("https://api.open-meteo.com/v1/forecast", params=params, timeout=15.0)
     r.raise_for_status()
     cur = r.json()["current"]
     desc = WMO_CODES.get(int(cur["weather_code"]), "unknown conditions")
@@ -244,8 +262,8 @@ def read_file(path: str) -> str:
 
 
 def read_memory() -> str:
-    """Read the assistant's local memory outside the workspace sandbox."""
-    return MemoryStore(os.path.join(config.DATA_DIR, "memory.md")).read().strip() or "(empty memory)"
+    """Read the detailed local-memory archive outside the workspace sandbox."""
+    return MemoryStore(os.path.join(config.DATA_DIR, "memory.md")).archive_text()
 
 
 def remember(fact: str) -> str:

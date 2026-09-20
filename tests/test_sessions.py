@@ -317,6 +317,23 @@ def test_conversation_tools_manage_current_session():
     asyncio.run(go())
 
 
+def test_execute_tool_reports_timing_and_safe_error_kind(monkeypatch):
+    store = SessionStore()
+    engines = _engines(store)
+
+    async def go() -> None:
+        session = VoiceSession(_RecWS(), engines)
+        monkeypatch.setattr(pipeline.tools, "execute", lambda name, args: "error: fetch failed (HTTP 503)")
+        result, event = pipeline.execute_tool("web_fetch", {"url": "https://example.com"}, session)
+
+        assert result.startswith("error:")
+        assert event["status"] == "error"
+        assert event["error_kind"] == "fetch_failed"
+        assert isinstance(event["duration_ms"], int) and event["duration_ms"] >= 0
+
+    asyncio.run(go())
+
+
 # ---------------- serve_session handshake + commands ----------------
 
 class _CmdWS:

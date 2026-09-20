@@ -134,8 +134,9 @@ class _FakeEngines:
         self.agent.thinking = True
         self.agent.max_tokens = 600
         self.agent.max_tool_rounds = 8
-        self.tts = type("T", (), {"voice": "af_heart", "speed": 1.0, "sentence_pause": 0.2})()
+        self.tts = type("T", (), {"voice": "af_heart", "speed": 1.0, "sentence_pause": 0.2, "warm_state": "ready"})()
         self.tts.voices = lambda: ["af_heart", "am_michael"]
+        self.tts.prime = lambda: None
         self.stt = type("S", (), {"language": "en", "beam_size": 1})()
         self.sessions = SessionStore()  # in-memory: no data_dir
         self.wake = WakeState()  # disabled (no phrase)

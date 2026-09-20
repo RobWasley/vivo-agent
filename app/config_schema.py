@@ -177,6 +177,13 @@ SCHEMA = {
                 "step": 0.05,
                 "attr": "TTS_SENTENCE_PAUSE",
             },
+            "warm_on_start": {
+                "type": "bool",
+                "label": "Warm TTS on start",
+                "help": "Load the speech engine and encode the active voice in the background after startup, reducing first-reply delay.",
+                "apply": "now",
+                "attr": "WARM_TTS_ON_START",
+            },
             "sentence_max_chars": {
                 "type": "int",
                 "label": "Max sentence chars",

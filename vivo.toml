@@ -13,7 +13,7 @@ model = "qwen3.8-27b"
 # Let the model reason before answering. Adds latency but improves answers, especially with tools. vivo speaks filler phrases while it thinks.
 thinking = true
 # Generation budget per reply (thinking + answer together). Too low truncates answers; too high wastes latency.
-max_tokens = 608
+max_tokens = 3008
 
 [persona]
 # Persona & prompt
@@ -36,20 +36,20 @@ units = "metric"
 [filler]
 # Thinking fillers
 # How long vivo waits without speakable text before starting to fill the silence with a phrase.
-first_after_s = 3
+first_after_s = 15
 # Gap between repeated filler phrases while the model keeps thinking.
-interval_s = 40
+interval_s = 45
 # Short phrases vivo speaks while thinking, one per line. Keep them brief — each one is synthesised separately.
 phrases = ["Let me think about that one more indepth.", "Hmmmm.... that's a tough one, this needs some thought.", "Give me a moment, I'm just trying to figure things out.", "Give me a second... maybe more than one actually.", "This one's tricky... give me a moment... or two."]
 
 [voice]
 # Voice (TTS)
 # The voice vivo speaks with: a reference clip (3-30 s of clear speech) that is cloned. Upload or record one below.
-tts_voice = "grace"
+tts_voice = "default"
 # Speech-rate multiplier applied to the cloned voice: 1.0 is the model's natural pace, higher is faster.
 tts_speed = 0.85
 # Silence appended after each spoken sentence.
-sentence_pause_s = 0.3
+sentence_pause_s = 0.7
 # Load the speech engine and encode the active voice in the background after startup, reducing first-reply delay.
 warm_on_start = true
 # Hard split for long unpunctuated text. Shorter means the first audio arrives sooner at the cost of choppier phrasing.
@@ -112,7 +112,7 @@ end_phrases = ["that's all", "goodbye", "go to sleep", "we're done", "we are don
 # What vivo says right after the wake phrase when nothing else was said.
 ack = "Got it, let me look into that."
 # What vivo says when a session ends (timeout or end phrase).
-goodnight = "Okay, going quiet."
+goodnight = "Okay, I'll go quiet now. Wake me if you need anything else."
 
 [memory]
 # Conversation memory
@@ -127,7 +127,7 @@ dream_interval_s = 3600
 # Agent tools
 # How many tool-call rounds one reply may use before it must end with an answer.
 max_tool_rounds = 8
-# How many times vivo retries a clean language-model server error while handling a tool request. Retries stop once any reply text has streamed.
+# Retry a clean language-model server error while processing a tool request. Retries stop once any reply text has streamed.
 tool_retries = 2
 # Default timeout for shell commands.
 exec_timeout_s = 60

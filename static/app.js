@@ -1,8 +1,11 @@
 /* vivo UI: mic -> WS (16 kHz int16 PCM) ; WS TTS (48 kHz int16 PCM by default) -> speaker.
  *
  * Protocol (see app/pipeline.py):
- *   client -> server : binary 16 kHz int16 PCM,
- *                      {"type":"barge_in"|"flush"|"wake"|"ping"|{"type":"session"[,"id":str]}}
+  *   client -> server : binary 16 kHz int16 PCM,
+  *                      {"type":"barge_in"|"flush"|"wake"|"ping"|{"type":"session"[,"id":str]}}
+  *                      {"type":"text","message":str,"speech":bool}
+  *                      (typed input: no VAD/STT/wake gate; speech=true -> TTS
+  *                       reply, speech=false -> text-only reply)
  *   server -> client : JSON start|end|transcript|agent_text|tool|barge_ack|reply_done|error|session|config|wake
  *                      + binary int16 mono TTS chunks (one per sentence; sample rate via config.audio.tts_sample_rate)
  *                      agent_text deltas may carry start (first delta of a new
@@ -35,6 +38,9 @@ const el = {
   transcriptToggle: $("transcript-toggle"),
   transcriptPanel: $("transcript-panel"),
   transcriptClose: $("transcript-close"),
+  textInput: $("text-input"),
+  btnSendText: $("btn-send-text"),
+  btnSendSpeech: $("btn-send-speech"),
   sidenav: $("sidenav"),
   navToggle: $("nav-toggle"),
   btnStart: $("btn-start"),
@@ -727,6 +733,9 @@ function resizeCanvas() {
   const rect = canvas.getBoundingClientRect();
   canvas.width = Math.max(1, Math.floor(rect.width * dpr));
   canvas.height = Math.max(1, Math.floor(rect.height * dpr));
+  draw(); // resizing clears the canvas: repaint now, so the frame this
+  // resize lands in is painted with content (ResizeObserver fires after
+  // the rAF draw but before paint)
 }
 
 function rgbOf(hex) {
@@ -1084,6 +1093,15 @@ function frame() {
   S.micLevel = smoothLevel(S.micLevel, S.micLevelTarget);
   S.playLevel = smoothLevel(S.playLevel, readPlayLevel());
 
+  draw();
+
+  if (++telTick % 10 === 0) el.telMic.textContent = `${Math.round(S.micLevel * 100)}%`;
+
+  el.meterFill.style.width = `${Math.round(S.micLevel * 100)}%`;
+  requestAnimationFrame(frame);
+}
+
+function draw() {
   const now = performance.now();
   const w = canvas.width, h = canvas.height;
   c2d.clearRect(0, 0, w, h);
@@ -1130,11 +1148,6 @@ function frame() {
   drawSpeakingWave(cx, cy, R, t, speakingW, reactLevel);
   drawDreaming(cx, cy, R, t, dreamingW);
   drawAsleep(cx, cy, R, t, asleepW);
-
-  if (++telTick % 10 === 0) el.telMic.textContent = `${Math.round(S.micLevel * 100)}%`;
-
-  el.meterFill.style.width = `${Math.round(S.micLevel * 100)}%`;
-  requestAnimationFrame(frame);
 }
 
 /* ---------------- settings pane (T019) ----------------
@@ -1543,6 +1556,21 @@ el.btnStart.addEventListener("click", async () => {
 el.btnBarage.addEventListener("click", bargeIn);
 
 el.btnFlush.addEventListener("click", () => sendJson({ type: "flush" }));
+
+function sendText(speech) {
+  const text = el.textInput.value.trim();
+  if (!text || !S.ws || S.ws.readyState !== WebSocket.OPEN) return;
+  sendJson({ type: "text", message: text, speech: speech });
+  el.textInput.value = "";
+}
+el.btnSendText.addEventListener("click", () => sendText(false));
+el.btnSendSpeech.addEventListener("click", () => sendText(true));
+el.textInput.addEventListener("keydown", (ev) => {
+  if (ev.key === "Enter") {
+    ev.preventDefault();
+    sendText(false);
+  }
+});
 el.btnWake.addEventListener("click", () => sendJson({ type: "wake" }));
 el.btnDream.addEventListener("click", triggerDream);
 
@@ -1592,6 +1620,7 @@ el.settingsDlg.addEventListener("click", (ev) => {
 });
 
 window.addEventListener("resize", resizeCanvas);
+new ResizeObserver(resizeCanvas).observe(el.canvas);
 window.addEventListener("load", () => {
   initMotionControls();
   resizeCanvas();

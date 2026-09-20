@@ -39,6 +39,9 @@ Protocol (JSON text frames unless noted):
     {"type":"session"}           start a new session, bind this connection to it
     {"type":"session","id":str}  bind this connection to an existing session
     {"type":"ping"}       -> {"type":"pong"}
+    {"type":"text","message":str,"speech":bool}
+                                   typed input (no VAD/STT/wake gate); speech=true
+                                   gives a TTS reply, speech=false a text-only reply
   server -> client
     {"type":"config","barge_in":{level_threshold,sustain_ms,cooldown_ms},
                    "wake":{phrase},"ui":{caption_linger_s}}
@@ -602,6 +605,24 @@ class VoiceSession:
         ).start()
         return True
 
+    def start_text_utterance(self, text: str, speech: bool) -> bool:
+        """Begin processing a typed utterance (no VAD/STT/wake gate)."""
+        with self.lock:
+            if self.reply_active:
+                return False
+            self.reply_active = True
+            self.generation += 1
+            gen = self.generation
+            self.tts_queue = queue_mod.Queue(maxsize=config.TTS_QUEUE_SIZE)
+            q = self.tts_queue
+        self.send({"type": "end"})
+        threading.Thread(
+            target=_handle_text_utterance,
+            args=(text, self, gen, q, speech),
+            daemon=True,
+        ).start()
+        return True
+
 
 def _tts_worker(
     q: "queue_mod.Queue", session: VoiceSession, gen: int, bench: Bench
@@ -827,6 +848,142 @@ def _handle_utterance(
         )
 
 
+def _handle_text_utterance(
+    text: str, session: VoiceSession, gen: int, q: "queue_mod.Queue", speech: bool
+) -> None:
+    """Process a typed utterance: no STT, no wake gate. speech=True runs the
+    normal TTS pipeline (voiced reply); speech=False streams text only."""
+    engines = session.engines
+    conv = session.conversation
+    t_start = time.monotonic()
+    bench = Bench(t_start)
+    spoken: list[str] = []
+    worker: threading.Thread | None = None
+    filler: ThinkingFiller | None = None
+    n_sentences = 0
+    in_thinking = False
+    think_started: float | None = None
+    thinking_secs = 0.0
+    chunker: SentenceChunker | None = None
+    try:
+        session.send({"type": "transcript", "text": text})
+        if not text.strip():
+            return
+
+        def execute(name: str, args: dict) -> str:
+            result = tools.execute(name, args)
+            log.info("tool %s -> %s", name, str(result)[:120])
+            if session.alive(gen):
+                session.send({"type": "tool", "name": name, "result": str(result)})
+            return result
+
+        if speech:
+            worker = threading.Thread(
+                target=_tts_worker, args=(q, session, gen, bench), daemon=True
+            )
+            worker.start()
+            chunker = SentenceChunker(
+                max_chars=config.SENTENCE_MAX_CHARS,
+                clause_max_chars=config.CLAUSE_MAX_CHARS,
+            )
+            filler = ThinkingFiller(session, gen, q, bench)
+            filler.start()
+
+            def enqueue(sentence: str) -> None:
+                nonlocal n_sentences
+                n_sentences += 1
+                bench.mark(f"sentence_{n_sentences}_ready")
+                t0 = time.monotonic()
+                q.put((n_sentences, sentence, "tts"))
+                bench.accumulate("llm_blocked_on_tts", time.monotonic() - t0)
+
+        msg_open = False
+        for item in engines.agent.reply(text, execute, history=conv.messages()):
+            if not session.alive(gen):
+                break
+            if isinstance(item, ReasoningDelta):
+                if not in_thinking:
+                    in_thinking = True
+                    think_started = time.monotonic()
+                    if "thinking_start" not in bench.events:
+                        bench.mark("thinking_start")
+                continue
+            if in_thinking:
+                in_thinking = False
+                bench.mark("thinking_end")
+                thinking_secs += time.monotonic() - think_started
+            if isinstance(item, ToolRound):
+                msg_open = False
+                continue
+            if "llm_first_token" not in bench.events:
+                bench.mark("llm_first_token")
+            spoken.append(item)
+            if filler is not None:
+                filler.note_text()
+            if not msg_open:
+                msg_open = True
+                session.send({"type": "agent_text", "delta": item, "start": True})
+            else:
+                session.send({"type": "agent_text", "delta": item})
+            if speech:
+                for sentence in chunker.add(item):
+                    enqueue(sentence)
+        if speech:
+            for sentence in chunker.flush():
+                enqueue(sentence)
+        bench.mark("generation_complete")
+    except Exception as e:  # noqa: BLE001 - surface pipeline errors to the client
+        log.exception("pipeline error")
+        if session.alive(gen):
+            session.send({"type": "error", "message": f"{type(e).__name__}: {e}"})
+    finally:
+        if filler is not None:
+            filler.stop()
+        if worker is not None:
+            q.put(_TTS_DONE)
+            worker.join()
+        barge_at = session.barge_mono.pop(gen, None)
+        if barge_at is not None:
+            bench.cancelled = True
+            bench.record("barge_in", barge_at - t_start)
+            bench.mark("stale_stop")
+        with session.lock:
+            is_current = session.generation == gen
+            if is_current:
+                session.reply_active = False
+                session.generation += 1
+                session.tts_queue = None
+        answer = "".join(spoken).strip()
+        if answer:
+            conv.add_turn(text, answer)
+        conv.maybe_compact(engines.agent.summarize)
+        if is_current and not session.closed:
+            session.send({"type": "reply_done"})
+            bench.mark("reply_done")
+
+        def _fmt(name: str) -> str:
+            v = bench.get(name)
+            return f"{v:.2f}s" if v is not None else "n/a"
+
+        fa = bench.first_audio()
+        n_fillers = filler.count if filler is not None else 0
+        log.info(
+            "text utterance %.2fs (thinking %s, first text %s, first audio %s, fillers %d)",
+            time.monotonic() - t_start,
+            f"{thinking_secs:.2f}s" if thinking_secs > 0 else "n/a",
+            _fmt("llm_first_token"),
+            f"{fa:.2f}s" if fa is not None else "n/a",
+            n_fillers,
+        )
+        bench.report(
+            gen,
+            sentences=n_sentences,
+            fillers=n_fillers,
+            thinking=round(thinking_secs, 3) if thinking_secs > 0 else None,
+            queue_max=config.TTS_QUEUE_SIZE,
+        )
+
+
 def _on_audio(session: VoiceSession, data: bytes) -> None:
     _wake_tick(session)
     if len(data) < 2 or len(data) % 2:
@@ -995,6 +1152,15 @@ async def serve_session(ws, engines: Engines) -> None:
                         session.send({"type": "start"})
                     elif ev.samples is not None and ev.samples.size >= 320:
                         session.start_utterance(ev.samples)
+            elif kind == "text":
+                typed = cmd.get("message", "")
+                if typed.strip():
+                    if not session.start_text_utterance(
+                        typed, cmd.get("speech", True)
+                    ):
+                        session.send(
+                            {"type": "error", "message": "a reply is already in progress"}
+                        )
             elif kind == "ping":
                 session.send({"type": "pong"})
     finally:

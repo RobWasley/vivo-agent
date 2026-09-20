@@ -91,7 +91,12 @@ const el = {
   telMic: $("tel-mic"),
   telWake: $("tel-wake"),
   telSession: $("tel-session"),
+  outputVolume: $("output-volume"),
+  telVolume: $("tel-volume"),
 };
+
+const DEFAULT_OUTPUT_VOLUME = 0.7;
+const OUTPUT_VOLUME_KEY = "vivo.output-volume";
 
 const S = {
   ws: null,
@@ -114,6 +119,7 @@ const S = {
   bargeCooldownUntil: 0, // suppress auto-barge re-triggers until this time
   dropAudio: false, // ignore in-flight TTS frames after a barge until the next `end`
   ttsSampleRate: DEFAULT_PLAY_RATE,
+  outputVolume: DEFAULT_OUTPUT_VOLUME,
   dreaming: false,
   wakeEnabled: false, // wake phrase configured on the server (T024)
   wakeActive: false, // wake-phrase session currently awake
@@ -125,6 +131,23 @@ const S = {
 };
 
 try { S.sessionId = localStorage.getItem("vivo.session"); } catch (_) { S.sessionId = null; }
+try {
+  const savedVolume = localStorage.getItem(OUTPUT_VOLUME_KEY);
+  if (savedVolume !== null) {
+    const volume = Number(savedVolume);
+    if (Number.isFinite(volume) && volume >= 0 && volume <= 1) S.outputVolume = volume;
+  }
+} catch (_) {}
+
+function setOutputVolume(value) {
+  const volume = Math.max(0, Math.min(1, Number(value)));
+  S.outputVolume = Number.isFinite(volume) ? volume : DEFAULT_OUTPUT_VOLUME;
+  if (S.play) S.play.gain.gain.value = S.outputVolume;
+  const percent = Math.round(S.outputVolume * 100);
+  el.outputVolume.value = String(percent);
+  el.telVolume.textContent = `${percent}%`;
+  try { localStorage.setItem(OUTPUT_VOLUME_KEY, String(S.outputVolume)); } catch (_) {}
+}
 
 function rememberSession(id) {
   S.sessionId = id;
@@ -287,6 +310,7 @@ function ensurePlay() {
   if (S.play) return;
   const ctx = new AudioContext();
   const gain = ctx.createGain();
+  gain.gain.value = S.outputVolume;
   const analyser = ctx.createAnalyser();
   analyser.fftSize = 1024;
   gain.connect(analyser);
@@ -781,6 +805,7 @@ const STATE_COLORS = {
   dreaming: [rgbOf("#a78bfa"), rgbOf("#2c2154")],
   speaking: [rgbOf("#fbbf24"), rgbOf("#5a3c0c")],
   asleep: [rgbOf("#5b6b80"), rgbOf("#161d29")],
+  mic_off: [rgbOf("#8a96a8"), rgbOf("#202836")],
 };
 
 const MOTION_PRESETS = {
@@ -868,6 +893,7 @@ function initMotionControls() {
 
 function currentDotState() {
   if (S.wsState !== "open") return S.wsState;
+  if (!S.micActive) return "mic_off";
   if (S.dreaming) return "dreaming";
   if (S.play && S.play.sources.size > 0) return "speaking";
   if (S.pipeline === "idle" && S.micActive && S.wakeEnabled && !S.wakeActive) return "asleep";
@@ -1111,6 +1137,15 @@ function drawAsleep(cx, cy, R, time, weight) {
     Math.max(1.5, R * 0.014), (0.14 + 0.1 * pulse) * weight, 0);
 }
 
+function drawMicOff(cx, cy, R, weight) {
+  if (weight < 0.02) return;
+  const c = STATE_COLORS.mic_off[0];
+  ringArc(cx, cy, R * 0.96, Math.PI * 0.2, Math.PI * 1.8, rgba(c, 1),
+    Math.max(1.5, R * 0.014), 0.28 * weight, 0);
+  ringArc(cx, cy, R * 0.72, Math.PI * 1.12, Math.PI * 1.88, rgba(c, 1),
+    Math.max(1.2, R * 0.01), 0.18 * weight, 0);
+}
+
 /* ---------------- frame loop ---------------- */
 
 function frame() {
@@ -1146,13 +1181,15 @@ function draw() {
   const thinkingW = stateWeight("thinking", progress);
   const dreamingW = stateWeight("dreaming", progress);
   const asleepW = stateWeight("asleep", progress);
+  const micOffW = stateWeight("mic_off", progress);
   const listeningW = stateWeight("listening", progress);
   const connectingW = stateWeight("connecting", progress);
   const closedW = stateWeight("closed", progress);
 
   // asleep: no level response, dim the stack, slow the rotation
-  const reactLevel = level * (1 - asleepW);
-  const dim = 1 - asleepW * 0.72;
+  const inactiveW = Math.max(asleepW, micOffW);
+  const reactLevel = level * (1 - inactiveW);
+  const dim = 1 - inactiveW * 0.72;
   const flicker = closedW > 0.02
     ? (1 - closedW) + closedW * (0.55 + 0.45 * Math.sin(t * 3.7))
     : 1;
@@ -1173,6 +1210,7 @@ function draw() {
   drawSpeakingWave(cx, cy, R, t, speakingW, reactLevel);
   drawDreaming(cx, cy, R, t, dreamingW);
   drawAsleep(cx, cy, R, t, asleepW);
+  drawMicOff(cx, cy, R, micOffW);
 }
 
 /* ---------------- settings pane (T019) ----------------
@@ -1190,6 +1228,7 @@ const APPLY_TIPS = {
 };
 
 const settings = { values: null, schema: null, voices: [] };
+const SETTINGS_SECTION_KEY = "vivo.settings-section";
 let settingsMsgTimer = null;
 
 function flashSettingsMsg(text, isError) {
@@ -1243,15 +1282,35 @@ async function openSettings() {
   settings.schema = j.schema;
   settings.voices = j.voices;
   el.settingsBody.innerHTML = "";
+  let openSection = "voice";
+  try { openSection = localStorage.getItem(SETTINGS_SECTION_KEY) || openSection; } catch (_) {}
+  if (!Object.prototype.hasOwnProperty.call(j.schema, openSection)) openSection = "voice";
   for (const [sec, spec] of Object.entries(j.schema)) {
-    const section = document.createElement("section");
+    const section = document.createElement("details");
     section.className = "ssection";
-    const h = document.createElement("h3");
-    h.textContent = spec.title;
-    section.appendChild(h);
+    section.dataset.section = sec;
+    section.open = sec === openSection;
+    const summary = document.createElement("summary");
+    const title = document.createElement("span");
+    title.textContent = spec.title;
+    const count = document.createElement("span");
+    count.className = "ssection-count";
+    count.textContent = `${Object.keys(spec.keys).length} settings`;
+    summary.append(title, count);
+    section.appendChild(summary);
+    const content = document.createElement("div");
+    content.className = "ssection-content";
     for (const [key, k] of Object.entries(spec.keys)) {
-      section.appendChild(buildSettingRow(sec, key, k));
+      content.appendChild(buildSettingRow(sec, key, k));
     }
+    section.appendChild(content);
+    section.addEventListener("toggle", () => {
+      if (!section.open) return;
+      for (const other of el.settingsBody.querySelectorAll(".ssection[open]")) {
+        if (other !== section) other.open = false;
+      }
+      try { localStorage.setItem(SETTINGS_SECTION_KEY, sec); } catch (_) {}
+    });
     el.settingsBody.appendChild(section);
   }
 }
@@ -1296,10 +1355,24 @@ function buildControl(k, value) {
     range.max = k.max;
     range.step = k.step;
     range.value = value;
-    const val = document.createElement("span");
-    val.className = "sval";
-    val.textContent = value;
-    range.addEventListener("input", () => { val.textContent = range.value; });
+    const val = document.createElement("input");
+    val.className = "snumber";
+    val.type = "number";
+    val.min = k.min;
+    val.max = k.max;
+    val.step = k.step;
+    val.value = value;
+    range.addEventListener("input", () => { val.value = range.value; });
+    val.addEventListener("input", () => {
+      const numeric = Number(val.value);
+      if (Number.isFinite(numeric) && numeric >= k.min && numeric <= k.max) range.value = String(numeric);
+    });
+    val.addEventListener("change", () => {
+      const numeric = Number(val.value);
+      const clamped = Number.isFinite(numeric) ? Math.max(k.min, Math.min(k.max, numeric)) : Number(range.value);
+      range.value = String(clamped);
+      val.value = range.value;
+    });
     const wrap = document.createElement("div");
     wrap.className = "srange";
     wrap.appendChild(range);
@@ -1527,9 +1600,11 @@ async function deleteVoice(name) {
 function readSettingRow(row) {
   const t = row.dataset.type;
   if (t === "voices") return row.querySelector("select").value;
+  if (t === "int" || t === "float") {
+    const value = Number(row.querySelector("input[type=number]").value);
+    return t === "int" ? Math.round(value) : value;
+  }
   const c = row.querySelector("input, select, textarea");
-  if (t === "int") return Math.round(Number(c.value));
-  if (t === "float") return Number(c.value);
   if (t === "bool") return c.checked;
   if (t === "str[]") return c.value.split("\n").map((s) => s.trim()).filter(Boolean);
   return c.value;
@@ -1862,6 +1937,7 @@ el.textInput.addEventListener("keydown", (ev) => {
 });
 el.btnWake.addEventListener("click", () => sendJson({ type: "wake" }));
 el.btnDream.addEventListener("click", triggerDream);
+el.outputVolume.addEventListener("input", () => setOutputVolume(Number(el.outputVolume.value) / 100));
 
 el.btnClear.addEventListener("click", () => {
   el.transcript.innerHTML = "";
@@ -1878,6 +1954,7 @@ el.sessionSelect.addEventListener("change", () => {
 
 el.navToggle.addEventListener("click", () => {
   const expanded = el.sidenav.classList.toggle("expanded");
+  document.body.classList.toggle("nav-expanded", expanded);
   el.navToggle.setAttribute("aria-expanded", expanded ? "true" : "false");
   el.navToggle.title = expanded ? "Collapse controls" : "Expand controls";
 });
@@ -1934,6 +2011,7 @@ el.memoryDlg.addEventListener("click", (ev) => {
 window.addEventListener("resize", resizeCanvas);
 new ResizeObserver(resizeCanvas).observe(el.canvas);
 window.addEventListener("load", () => {
+  setOutputVolume(S.outputVolume);
   initMotionControls();
   resizeCanvas();
   loadSessions().then(connectWS); // bind a session before opening the socket

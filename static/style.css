@@ -329,6 +329,18 @@ body.transcript-open .caption {
   display: block;
 }
 
+.nav-btn .icon-mute {
+  display: none;
+}
+
+.nav-btn.active .icon-mic {
+  display: none;
+}
+
+.nav-btn.active .icon-mute {
+  display: block;
+}
+
 .nav-btn:hover {
   color: var(--text);
   border-color: var(--line);

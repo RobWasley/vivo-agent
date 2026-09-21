@@ -335,10 +335,10 @@ async function startMic() {
   S.mic = { stream, ctx, source, proc };
   S.micActive = true;
   el.btnStart.classList.add("active");
-  el.btnStart.title = "Stop microphone";
-  el.btnStart.setAttribute("aria-label", "Stop microphone");
+  el.btnStart.title = "Mute microphone";
+  el.btnStart.setAttribute("aria-label", "Mute microphone");
   const lbl = el.btnStart.querySelector(".nav-label");
-  if (lbl) lbl.textContent = "Stop";
+  if (lbl) lbl.textContent = "Mute";
   updateWakeUi();
 }
 
@@ -353,10 +353,10 @@ function stopMic() {
   S.micActive = false;
   S.micLevelTarget = 0;
   el.btnStart.classList.remove("active");
-  el.btnStart.title = "Start microphone";
-  el.btnStart.setAttribute("aria-label", "Start microphone");
+  el.btnStart.title = "Turn on microphone";
+  el.btnStart.setAttribute("aria-label", "Turn on microphone");
   const lbl = el.btnStart.querySelector(".nav-label");
-  if (lbl) lbl.textContent = "Start";
+  if (lbl) lbl.textContent = "Mic";
   updateHint();
   updateStatus();
 }
@@ -848,7 +848,7 @@ function updateHint() {
   } else if (S.micActive) {
     el.hint.innerHTML = "mic on &middot; talk to me";
   } else {
-    el.hint.innerHTML = "mic off &middot; click <b>start</b> to allow the microphone";
+    el.hint.innerHTML = "mic off &middot; tap <b>mic</b> to allow the microphone";
   }
 }
 

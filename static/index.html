@@ -21,7 +21,7 @@
     <div class="stage-root" aria-label="Live voice">
       <canvas id="dot" aria-label="Vivo state ring"></canvas>
       <p class="caption" id="caption" aria-live="polite"></p>
-      <p class="hint" id="hint">mic off &middot; click <b>start</b> to allow the microphone</p>
+      <p class="hint" id="hint">mic off &middot; tap <b>mic</b> to allow the microphone</p>
     </div>
 
   <nav class="sidenav" id="sidenav" aria-label="Controls">
@@ -41,12 +41,21 @@
     </button>
 
     <div class="nav-group">
-      <button class="nav-btn primary" id="btn-start" title="Start microphone" aria-label="Start microphone">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-          <path d="M12 3v8"/>
-          <path d="M6.3 6.6a8 8 0 1 0 11.4 0"/>
+      <button class="nav-btn primary" id="btn-start" title="Turn on microphone" aria-label="Turn on microphone">
+        <svg class="icon-mic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/>
+          <path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
+          <line x1="12" y1="19" x2="12" y2="22"/>
         </svg>
-        <span class="nav-label">Start</span>
+        <svg class="icon-mute" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+          <line x1="2" y1="2" x2="22" y2="22"/>
+          <path d="M18.89 13.23A7.12 7.12 0 0 0 19 12v-2"/>
+          <path d="M5 10v2a7 7 0 0 0 12 5"/>
+          <path d="M15 9.34V5a3 3 0 0 0-5.68-1.33"/>
+          <path d="M9 9v3a3 3 0 0 0 5.12 2.12"/>
+          <line x1="12" y1="19" x2="12" y2="22"/>
+        </svg>
+        <span class="nav-label">Mic</span>
       </button>
       <button class="nav-btn" id="btn-browser" title="Watch browser" aria-controls="browser-panel" aria-expanded="false">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
@@ -166,7 +175,7 @@
       <div class="entry entry-hint">
         <span class="t">&mdash;</span>
         <span class="who">sys</span>
-        <p>Hit <b>start</b>, then talk. I&rsquo;ll listen, think, and answer out loud.</p>
+        <p>Tap <b>mic</b>, then talk. I&rsquo;ll listen, think, and answer out loud.</p>
       </div>
     </div>
     <div class="text-input-bar" id="text-input-bar">

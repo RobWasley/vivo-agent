@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import os
 import threading
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -9,7 +10,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from app import config, config_schema, models, pipeline
+from app import bench, config, config_schema, models, pipeline
 from app.skills import SkillStore
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
@@ -33,6 +34,15 @@ class SkillPayload(BaseModel):
 class MemoryPayload(BaseModel):
     text: str
     core: bool = False
+
+
+class BenchSTTPayload(BaseModel):
+    models: list[str] = []
+    compute_type: str | None = None
+
+
+class BenchTTSPayload(BaseModel):
+    cpu_threads: list[int] = []
 
 
 @asynccontextmanager
@@ -98,6 +108,34 @@ async def trigger_dream(request: Request):
     engines = request.app.state.engines
     summary = await asyncio.to_thread(engines.dream_scheduler.trigger)
     return {"ok": True, "summary": summary}
+
+
+@app.post("/api/bench/stt")
+async def bench_stt(body: BenchSTTPayload):
+    """Time load+transcribe for the requested faster-whisper sizes on a
+    fixed sample clip. New sizes may need to download first, so this can
+    block for a while — the settings pane runs it on demand, not on load."""
+    model_list = body.models or [config.STT_MODEL]
+    compute_type = body.compute_type or config.STT_COMPUTE_TYPE
+    results = await asyncio.to_thread(
+        bench.bench_stt, model_list, compute_type, config.MODEL_DIR,
+        config.STT_CPU_THREADS, config.STT_LANGUAGE,
+    )
+    return {"results": results, "suggestion": bench.suggest_stt(results)}
+
+
+@app.post("/api/bench/tts")
+async def bench_tts(body: BenchTTSPayload, request: Request):
+    """Time load+encode+synth for the current voice across candidate CPU
+    thread counts (each gets a throwaway engine; the live one is untouched)."""
+    engines = request.app.state.engines
+    cpu_count = os.cpu_count() or 4
+    thread_options = body.cpu_threads or sorted({1, 2, min(4, cpu_count), cpu_count})
+    results = await asyncio.to_thread(
+        bench.bench_tts, engines.tts.voice, config.MODEL_DIR, config.DATA_DIR,
+        config.TTS_SPEED, thread_options,
+    )
+    return {"results": results, "suggestion": bench.suggest_tts(results)}
 
 
 @app.get("/api/memory")

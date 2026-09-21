@@ -1291,7 +1291,9 @@ async function openSettings() {
   el.settingsBody.innerHTML = "";
   let openSection = "voice";
   try { openSection = localStorage.getItem(SETTINGS_SECTION_KEY) || openSection; } catch (_) {}
-  if (!Object.prototype.hasOwnProperty.call(j.schema, openSection)) openSection = "voice";
+  if (openSection !== "bench" && !Object.prototype.hasOwnProperty.call(j.schema, openSection)) {
+    openSection = "voice";
+  }
   for (const [sec, spec] of Object.entries(j.schema)) {
     const section = document.createElement("details");
     section.className = "ssection";
@@ -1320,6 +1322,7 @@ async function openSettings() {
     });
     el.settingsBody.appendChild(section);
   }
+  el.settingsBody.appendChild(buildBenchmarkSection(openSection === "bench"));
 }
 
 function buildSettingRow(sec, key, k) {
@@ -1416,6 +1419,275 @@ function buildControl(k, value) {
   inp.type = "text";
   inp.value = value;
   return inp;
+}
+
+/* ---------------- benchmark & tune (STT/TTS) ----------------
+ * On-demand, in-process timing runs (GET/POST /api/bench/*, see app/bench.py):
+ * unlike bench.py (host-side, full pipeline), these just time the STT/TTS
+ * engines directly and suggest a config, which the user can copy into the
+ * form above (still needs Save + a restart for STT/TTS changes to apply).
+ */
+
+const BENCH_STT_MODELS = ["tiny", "base", "small", "medium", "large-v3"];
+const BENCH_COMPUTE_TYPES = ["int8", "int8_float16", "float16", "float32"];
+
+function applyToSettingRow(sec, key, value) {
+  const row = el.settingsBody.querySelector(`.srow[data-sec="${sec}"][data-key="${key}"]`);
+  const ctrl = row && row.querySelector("select, input, textarea");
+  if (ctrl) ctrl.value = value;
+}
+
+function buildBenchmarkSection(open) {
+  const section = document.createElement("details");
+  section.className = "ssection";
+  section.dataset.section = "bench";
+  section.open = !!open;
+  const summary = document.createElement("summary");
+  const title = document.createElement("span");
+  title.textContent = "Benchmark & tune";
+  summary.appendChild(title);
+  section.appendChild(summary);
+  const content = document.createElement("div");
+  content.className = "ssection-content bench-content";
+  content.appendChild(buildSttBenchPanel());
+  content.appendChild(buildTtsBenchPanel());
+  section.appendChild(content);
+  section.addEventListener("toggle", () => {
+    if (!section.open) return;
+    for (const other of el.settingsBody.querySelectorAll(".ssection[open]")) {
+      if (other !== section) other.open = false;
+    }
+    try { localStorage.setItem(SETTINGS_SECTION_KEY, "bench"); } catch (_) {}
+  });
+  return section;
+}
+
+function buildSttBenchPanel() {
+  const wrap = document.createElement("div");
+  wrap.className = "bench-panel";
+  wrap.innerHTML = '<div class="bench-heading">Speech-to-text</div>' +
+    '<p class="bench-note">Times a fixed sample clip on each checked model size (same compute ' +
+    "type). New sizes download on first use, so checking several can take a while. There's no " +
+    "ground truth, so read the transcript back to judge accuracy yourself.</p>";
+
+  const checks = document.createElement("div");
+  checks.className = "bench-checks";
+  const boxes = [];
+  for (const m of BENCH_STT_MODELS) {
+    const label = document.createElement("label");
+    label.className = "bench-check";
+    const box = document.createElement("input");
+    box.type = "checkbox";
+    box.value = m;
+    box.checked = settings.values.stt.model === m;
+    label.append(box, document.createTextNode(m));
+    checks.appendChild(label);
+    boxes.push(box);
+  }
+  wrap.appendChild(checks);
+
+  const controls = document.createElement("div");
+  controls.className = "bench-controls";
+  const computeSel = document.createElement("select");
+  for (const c of BENCH_COMPUTE_TYPES) {
+    const opt = document.createElement("option");
+    opt.value = c;
+    opt.textContent = c;
+    if (c === settings.values.stt.compute_type) opt.selected = true;
+    computeSel.appendChild(opt);
+  }
+  const runBtn = document.createElement("button");
+  runBtn.className = "ghost tiny";
+  runBtn.type = "button";
+  runBtn.textContent = "Run STT benchmark";
+  controls.append(computeSel, runBtn);
+  wrap.appendChild(controls);
+
+  const status = document.createElement("p");
+  status.className = "bench-status";
+  wrap.appendChild(status);
+  const results = document.createElement("div");
+  results.className = "bench-results";
+  wrap.appendChild(results);
+
+  runBtn.addEventListener("click", async () => {
+    const models = boxes.filter((b) => b.checked).map((b) => b.value);
+    if (!models.length) {
+      status.className = "bench-status err";
+      status.textContent = "check at least one model size";
+      return;
+    }
+    runBtn.disabled = true;
+    status.className = "bench-status";
+    status.textContent = "running… this can take a while for larger/new models";
+    results.innerHTML = "";
+    try {
+      const res = await fetch("/api/bench/stt", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ models, compute_type: computeSel.value }),
+      });
+      const j = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(j.detail || `HTTP ${res.status}`);
+      status.textContent = "";
+      renderSttResults(results, j.results, j.suggestion);
+    } catch (err) {
+      status.className = "bench-status err";
+      status.textContent = `benchmark failed: ${err.message}`;
+    } finally {
+      runBtn.disabled = false;
+    }
+  });
+
+  return wrap;
+}
+
+function renderSttResults(container, rows, suggestion) {
+  container.innerHTML = "";
+  if (!rows || !rows.length) return;
+  const table = document.createElement("table");
+  table.className = "bench-table";
+  const head = document.createElement("tr");
+  for (const h of ["model", "load", "rtf", "transcript"]) {
+    const th = document.createElement("th");
+    th.textContent = h;
+    head.appendChild(th);
+  }
+  table.appendChild(head);
+  for (const r of rows) {
+    const tr = document.createElement("tr");
+    if (r.error) {
+      const td = document.createElement("td");
+      td.colSpan = 4;
+      td.className = "bench-err";
+      td.textContent = `${r.model}: ${r.error}`;
+      tr.appendChild(td);
+    } else {
+      for (const c of [r.model, `${r.load_s}s`, r.rtf, r.text || ""]) {
+        const td = document.createElement("td");
+        td.textContent = c;
+        tr.appendChild(td);
+      }
+    }
+    table.appendChild(tr);
+  }
+  container.appendChild(table);
+  if (!suggestion) return;
+  const banner = document.createElement("div");
+  banner.className = "bench-suggest";
+  const text = document.createElement("span");
+  text.textContent = `Suggested: ${suggestion.model} / ${suggestion.compute_type} — ${suggestion.reason}`;
+  const applyBtn = document.createElement("button");
+  applyBtn.className = "ghost tiny";
+  applyBtn.type = "button";
+  applyBtn.textContent = "Apply to form";
+  applyBtn.addEventListener("click", () => {
+    applyToSettingRow("stt", "model", suggestion.model);
+    applyToSettingRow("stt", "compute_type", suggestion.compute_type);
+    flashSettingsMsg("suggestion applied to the form — click Save to persist (needs restart)");
+  });
+  banner.append(text, applyBtn);
+  container.appendChild(banner);
+}
+
+function buildTtsBenchPanel() {
+  const wrap = document.createElement("div");
+  wrap.className = "bench-panel";
+  wrap.innerHTML = '<div class="bench-heading">Text-to-speech</div>' +
+    '<p class="bench-note">Times two sample sentences in the active voice across candidate CPU ' +
+    "thread counts (each reloads the voice engine once). Thread count isn't in this form — apply " +
+    "the suggestion via the TTS_CPU_THREADS environment variable and restart.</p>";
+
+  const controls = document.createElement("div");
+  controls.className = "bench-controls";
+  const threadsInput = document.createElement("input");
+  threadsInput.type = "text";
+  threadsInput.placeholder = "thread counts, e.g. 1,2,4,8";
+  threadsInput.value = "1,2,4,8";
+  const runBtn = document.createElement("button");
+  runBtn.className = "ghost tiny";
+  runBtn.type = "button";
+  runBtn.textContent = "Run TTS benchmark";
+  controls.append(threadsInput, runBtn);
+  wrap.appendChild(controls);
+
+  const status = document.createElement("p");
+  status.className = "bench-status";
+  wrap.appendChild(status);
+  const results = document.createElement("div");
+  results.className = "bench-results";
+  wrap.appendChild(results);
+
+  runBtn.addEventListener("click", async () => {
+    const threads = threadsInput.value.split(",")
+      .map((s) => parseInt(s.trim(), 10))
+      .filter((n) => Number.isFinite(n) && n > 0);
+    if (!threads.length) {
+      status.className = "bench-status err";
+      status.textContent = "enter at least one thread count";
+      return;
+    }
+    runBtn.disabled = true;
+    status.className = "bench-status";
+    status.textContent = "running… reloads the voice engine for each thread count";
+    results.innerHTML = "";
+    try {
+      const res = await fetch("/api/bench/tts", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ cpu_threads: threads }),
+      });
+      const j = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(j.detail || `HTTP ${res.status}`);
+      status.textContent = "";
+      renderTtsResults(results, j.results, j.suggestion);
+    } catch (err) {
+      status.className = "bench-status err";
+      status.textContent = `benchmark failed: ${err.message}`;
+    } finally {
+      runBtn.disabled = false;
+    }
+  });
+
+  return wrap;
+}
+
+function renderTtsResults(container, rows, suggestion) {
+  container.innerHTML = "";
+  if (!rows || !rows.length) return;
+  const table = document.createElement("table");
+  table.className = "bench-table";
+  const head = document.createElement("tr");
+  for (const h of ["threads", "load", "prime", "rtf"]) {
+    const th = document.createElement("th");
+    th.textContent = h;
+    head.appendChild(th);
+  }
+  table.appendChild(head);
+  for (const r of rows) {
+    const tr = document.createElement("tr");
+    if (r.error) {
+      const td = document.createElement("td");
+      td.colSpan = 4;
+      td.className = "bench-err";
+      td.textContent = `${r.cpu_threads} threads: ${r.error}`;
+      tr.appendChild(td);
+    } else {
+      for (const c of [r.cpu_threads, `${r.load_s}s`, `${r.prime_s}s`, r.rtf]) {
+        const td = document.createElement("td");
+        td.textContent = c;
+        tr.appendChild(td);
+      }
+    }
+    table.appendChild(tr);
+  }
+  container.appendChild(table);
+  if (!suggestion) return;
+  const banner = document.createElement("div");
+  banner.className = "bench-suggest";
+  banner.textContent = `Suggested: ${suggestion.cpu_threads} threads — ${suggestion.reason}. ` +
+    `Set TTS_CPU_THREADS=${suggestion.cpu_threads} in docker-compose.yml and restart.`;
+  container.appendChild(banner);
 }
 
 /* Voice-clone controls (T022): the selected reference clip + actions to add

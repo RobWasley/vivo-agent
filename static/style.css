@@ -1598,3 +1598,126 @@ button.danger-action:hover {
     text-align: center;
   }
 }
+
+/* ---------------- benchmark & tune ---------------- */
+
+.bench-content {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.bench-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 0;
+  border-top: 1px solid rgba(120, 165, 235, 0.08);
+}
+
+.bench-content .bench-panel:first-child {
+  border-top: none;
+}
+
+.bench-heading {
+  font-family: var(--font-display);
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text);
+}
+
+.bench-note {
+  margin: 0;
+  font-size: 0.76rem;
+  line-height: 1.45;
+  color: var(--muted);
+}
+
+.bench-checks {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.bench-check {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.78rem;
+  color: var(--text);
+}
+
+.bench-check input {
+  accent-color: var(--accent);
+}
+
+.bench-controls {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.bench-controls select,
+.bench-controls input[type="text"] {
+  font-family: var(--font-ui);
+  font-size: 0.84rem;
+  color: var(--text);
+  background: rgba(8, 14, 26, 0.85);
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  padding: 7px 9px;
+}
+
+.bench-status {
+  margin: 0;
+  font-size: 0.76rem;
+  color: var(--muted);
+}
+
+.bench-status.err {
+  color: var(--err);
+}
+
+.bench-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.76rem;
+}
+
+.bench-table th,
+.bench-table td {
+  padding: 6px 8px;
+  text-align: left;
+  border-bottom: 1px solid var(--line);
+  color: var(--text);
+}
+
+.bench-table th {
+  font-family: var(--font-mono);
+  font-size: 0.62rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.bench-err {
+  color: var(--err);
+}
+
+.bench-suggest {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-top: 8px;
+  padding: 8px 10px;
+  border: 1px solid rgba(56, 189, 248, 0.35);
+  border-radius: 8px;
+  background: rgba(56, 189, 248, 0.08);
+  font-size: 0.78rem;
+  color: var(--text);
+}
+

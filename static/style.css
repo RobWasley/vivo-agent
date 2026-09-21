@@ -106,6 +106,34 @@ body.transcript-open .stage-root {
   right: min(400px, 94vw);
 }
 
+body.browser-open .stage-root {
+  right: 0;
+  bottom: 62px;
+}
+
+body.browser-open #dot {
+  left: 0;
+  top: 0;
+  width: 220px;
+  height: 230px;
+}
+
+body.browser-open .caption {
+  left: 220px;
+  top: 0;
+  width: 360px;
+  transform: none;
+  text-align: left;
+  border-top: none;
+  border-left: none;
+  border-radius: 0;
+}
+
+body.browser-open .hint {
+  left: 110px;
+  bottom: 74px;
+}
+
 #dot {
   position: absolute;
   inset: 0;
@@ -502,6 +530,341 @@ body.transcript-open .transcript-tab {
 
 body.transcript-open .transcript-panel {
   transform: translateX(0);
+}
+
+.browser-panel {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 10;
+  left: calc(var(--sidenav-w) + 580px);
+  width: auto;
+  display: flex;
+  flex-direction: column;
+  background: rgba(6, 10, 19, 0.94);
+  border-left: 1px solid var(--line);
+  backdrop-filter: blur(18px);
+  box-shadow: -24px 0 60px rgba(2, 6, 14, 0.5);
+  transform: translateX(103%);
+  transition: transform 260ms cubic-bezier(0.22, 0.8, 0.26, 1);
+}
+
+.browser-panel.open {
+  transform: translateX(0);
+}
+
+body.browser-open .transcript-panel {
+  left: calc(var(--sidenav-w) + 220px);
+  right: auto;
+  width: 360px;
+  bottom: 58px;
+  transform: translateX(0);
+  border-left: none;
+  border-right: 1px solid var(--line);
+  box-shadow: 24px 0 60px rgba(2, 6, 14, 0.35);
+}
+
+.browser-fps {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--faint);
+  font-family: var(--font-mono);
+  font-size: 0.6rem;
+  text-transform: uppercase;
+}
+
+.browser-fps select {
+  width: 48px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--bg-2);
+  color: var(--text);
+  font: inherit;
+}
+
+.browser-status {
+  color: var(--faint);
+  font-family: var(--font-mono);
+  font-size: 0.6rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.browser-status[data-state="online"] {
+  color: var(--ok);
+}
+
+.browser-status[data-state="connecting"] {
+  color: var(--speak);
+}
+
+.browser-viewport {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  place-items: center;
+  padding: 16px;
+  background: #02040a;
+}
+
+.browser-viewport img {
+  display: block;
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+  border: 1px solid var(--line);
+}
+
+.browser-viewport p {
+  position: absolute;
+  margin: 0;
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+}
+
+.browser-url {
+  flex: none;
+  overflow: hidden;
+  padding: 10px 16px;
+  border-top: 1px solid var(--line);
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: 0.65rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+body.browser-open .browser-panel {
+  top: 0;
+  bottom: 62px;
+}
+
+body.browser-open .telemetry {
+  right: 0;
+}
+
+/* Browser mode is a real workspace, so its regions no longer overlap. */
+.workspace {
+  position: fixed;
+  inset: 0 0 0 var(--sidenav-w);
+  z-index: 1;
+}
+
+body.browser-open .workspace {
+  display: grid;
+  grid-template-columns: 220px 360px minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr) 62px;
+}
+
+body.browser-open .stage-root,
+body.browser-open .transcript-panel,
+body.browser-open .browser-panel,
+body.browser-open .telemetry {
+  position: static;
+  inset: auto;
+  width: auto;
+  height: auto;
+  min-width: 0;
+  min-height: 0;
+  transform: none;
+  transition: none;
+}
+
+body.browser-open .stage-root {
+  grid-column: 1;
+  grid-row: 1;
+  display: block;
+  right: auto;
+  bottom: auto;
+}
+
+body.browser-open .transcript-panel {
+  grid-column: 2;
+  grid-row: 1;
+  border-right: 1px solid var(--line);
+  border-left: 1px solid var(--line);
+  box-shadow: none;
+}
+
+body.browser-open .browser-panel {
+  grid-column: 3;
+  grid-row: 1;
+  border-left: 1px solid var(--line);
+  box-shadow: none;
+}
+
+body.browser-open .telemetry {
+  grid-column: 1 / -1;
+  grid-row: 2;
+  right: auto;
+  left: auto;
+}
+
+body.browser-open #dot {
+  width: 100%;
+  height: 100%;
+}
+
+body.browser-open .caption {
+  left: 12px;
+  top: auto;
+  bottom: 24px;
+  width: calc(100% - 24px);
+  transform: none;
+  text-align: center;
+  border: 1px solid rgba(140, 190, 255, 0.18);
+  border-radius: 8px;
+  font-size: 0.9rem;
+}
+
+body.browser-open .hint {
+  left: 50%;
+  bottom: 8px;
+}
+
+@media (max-width: 900px) {
+  body.browser-open .workspace {
+    grid-template-columns: 180px minmax(0, 1fr);
+    grid-template-rows: minmax(0, 1fr) 62px;
+  }
+
+  body.browser-open .stage-root {
+    grid-column: 1;
+    grid-row: 1;
+  }
+
+  body.browser-open .transcript-panel {
+    display: none;
+  }
+
+  body.browser-open .browser-panel {
+    grid-column: 2;
+    grid-row: 1;
+  }
+}
+
+@media (max-width: 620px) {
+  body.browser-open .workspace {
+    grid-template-columns: 1fr;
+    grid-template-rows: 170px minmax(0, 1fr) 62px;
+  }
+
+  body.browser-open .stage-root {
+    grid-column: 1;
+    grid-row: 1;
+  }
+
+  body.browser-open .browser-panel {
+    grid-column: 1;
+    grid-row: 2;
+  }
+}
+
+/* Browser mode uses the original console shell: the browser replaces the orb,
+   while transcript and settings remain independent sidebars. */
+body.browser-open .workspace {
+  display: block;
+  position: static;
+  inset: auto;
+}
+
+body.browser-open .stage-root {
+  position: fixed;
+  left: var(--sidenav-w);
+  top: 0;
+  right: 0;
+  bottom: 62px;
+  width: auto;
+  height: auto;
+  z-index: 1;
+}
+
+body.browser-open #dot {
+  display: none;
+}
+
+body.browser-open .browser-panel {
+  position: fixed;
+  left: var(--sidenav-w);
+  top: 0;
+  right: 0;
+  bottom: 62px;
+  width: auto;
+  height: auto;
+  z-index: 2;
+  transform: none;
+  border: none;
+  box-shadow: none;
+}
+
+body.browser-open .browser-viewport {
+  place-items: center;
+  padding: 20px;
+}
+
+body.browser-open .browser-viewport img {
+  width: min(100%, 1280px);
+  aspect-ratio: 16 / 9;
+  max-height: 100%;
+}
+
+body.browser-open .caption {
+  position: fixed;
+  left: calc(var(--sidenav-w) + 50%);
+  top: auto;
+  right: auto;
+  bottom: 76px;
+  width: min(70vw, 900px);
+  transform: translateX(-50%);
+  z-index: 12;
+  border: 1px solid rgba(140, 190, 255, 0.18);
+  border-radius: 8px;
+  text-align: center;
+  font-size: clamp(0.9rem, 1.4vw, 1.2rem);
+}
+
+body.browser-open .hint {
+  left: calc(var(--sidenav-w) + 50%);
+  bottom: 12px;
+  z-index: 12;
+}
+
+body.browser-open .transcript-panel {
+  position: fixed;
+  left: auto;
+  top: 0;
+  right: 0;
+  bottom: 62px;
+  width: min(400px, 94vw);
+  height: auto;
+  z-index: 10;
+  transform: translateX(103%);
+  border-left: 1px solid var(--line);
+  border-right: none;
+  box-shadow: -24px 0 60px rgba(2, 6, 14, 0.5);
+}
+
+body.browser-open.transcript-open .transcript-panel {
+  transform: translateX(0);
+}
+
+body.browser-open.transcript-open .browser-panel,
+body.browser-open.transcript-open .stage-root {
+  right: min(400px, 94vw);
+}
+
+body.browser-open .telemetry {
+  position: fixed;
+  left: var(--sidenav-w);
+  right: 0;
+  bottom: 0;
+  width: auto;
+  height: 62px;
+  z-index: 6;
 }
 
 .panel-head {

@@ -56,6 +56,14 @@ const el = {
   btnSettings: $("btn-settings"),
   btnSkills: $("btn-skills"),
   btnMemory: $("btn-memory"),
+  btnBrowser: $("btn-browser"),
+  browserPanel: $("browser-panel"),
+  browserClose: $("browser-close"),
+  browserFrame: $("browser-frame"),
+  browserEmpty: $("browser-empty"),
+  browserStatus: $("browser-status"),
+  browserUrl: $("browser-url"),
+  browserFps: $("browser-fps"),
   motionPreset: $("motion-preset"),
   settingsDlg: $("settings"),
   settingsBody: $("settings-body"),
@@ -128,6 +136,9 @@ const S = {
   prefersReducedMotion: false,
   hydrateToken: 0,
   sessionsById: {},
+  browserWs: null,
+  browserFramePending: null,
+  browserFrameRaf: 0,
 };
 
 try { S.sessionId = localStorage.getItem("vivo.session"); } catch (_) { S.sessionId = null; }
@@ -192,6 +203,77 @@ function startPinging() {
 function stopPinging() {
   if (S.pingTimer) clearInterval(S.pingTimer);
   S.pingTimer = null;
+}
+
+function setBrowserStatus(status) {
+  const label = status === "offline" ? "waiting" : status;
+  el.browserStatus.textContent = label;
+  el.browserStatus.dataset.state = status;
+}
+
+function sendBrowserFps() {
+  if (!S.browserWs || S.browserWs.readyState !== WebSocket.OPEN) return;
+  const fps = Number(el.browserFps?.value || 10);
+  S.browserWs.send(JSON.stringify({ type: "browser_fps", maxFps: Number.isFinite(fps) ? fps : 10 }));
+}
+
+function renderBrowserFrame() {
+  S.browserFrameRaf = 0;
+  if (!S.browserFramePending) return;
+  el.browserFrame.src = `data:image/jpeg;base64,${S.browserFramePending}`;
+  el.browserFrame.hidden = false;
+  el.browserEmpty.hidden = true;
+  S.browserFramePending = null;
+}
+
+function connectBrowserWS() {
+  if (S.browserWs) return;
+  setBrowserStatus("connecting");
+  const base = `${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws/browser`;
+  const ws = new WebSocket(base);
+  ws.onmessage = (ev) => {
+    let message;
+    try { message = JSON.parse(ev.data); } catch (_) { return; }
+    if (message.type === "browser_status") {
+      setBrowserStatus(message.status);
+    } else if (message.type === "frame" && message.data) {
+      S.browserFramePending = message.data;
+      if (!S.browserFrameRaf) S.browserFrameRaf = requestAnimationFrame(renderBrowserFrame);
+    } else if (message.type === "url") {
+      el.browserUrl.textContent = message.url || "No page open";
+    }
+  };
+  ws.onclose = () => {
+    if (S.browserWs === ws) {
+      S.browserWs = null;
+      setBrowserStatus("offline");
+    }
+  };
+  ws.onerror = () => setBrowserStatus("offline");
+  ws.onopen = () => ws.send(JSON.stringify({ type: "browser_fps", maxFps: 10 }));
+  S.browserWs = ws;
+}
+
+function disconnectBrowserWS() {
+  if (S.browserWs) S.browserWs.close();
+  S.browserWs = null;
+  setBrowserStatus("offline");
+}
+
+function setBrowserOpen(open) {
+  el.browserPanel.classList.toggle("open", open);
+  document.body.classList.toggle("browser-open", open);
+  el.browserPanel.setAttribute("aria-hidden", open ? "false" : "true");
+  el.btnBrowser.setAttribute("aria-expanded", open ? "true" : "false");
+  el.btnBrowser.title = open ? "Return to voice" : "Open browser workspace";
+  el.btnBrowser.setAttribute("aria-label", open ? "Return to voice" : "Open browser workspace");
+  const browserLabel = el.btnBrowser.querySelector(".nav-label");
+  if (browserLabel) browserLabel.textContent = open ? "Voice" : "Browser";
+  if (open) {
+    connectBrowserWS();
+    sendBrowserFps();
+  }
+  else disconnectBrowserWS();
 }
 
 function setWsState(s) {
@@ -1912,6 +1994,9 @@ async function saveSettings() {
       throw new Error(detail);
     }
     settings.values = j.values;
+    if (el.browserFps && j.values.browser) {
+      el.browserFps.value = String(j.values.browser.max_fps || 10);
+    }
     flashSettingsMsg("saved — written to vivo.toml");
   } catch (err) {
     flashSettingsMsg(`save failed: ${err.message}`, true);
@@ -2286,6 +2371,11 @@ el.btnMemoryX.addEventListener("click", closeMemory);
 el.memoryDlg.addEventListener("click", (ev) => {
   if (ev.target === el.memoryDlg) closeMemory();
 });
+
+el.btnBrowser.addEventListener("click", () =>
+  setBrowserOpen(!document.body.classList.contains("browser-open")));
+el.browserClose.addEventListener("click", () => setBrowserOpen(false));
+el.browserFps.addEventListener("change", sendBrowserFps);
 
 window.addEventListener("resize", resizeCanvas);
 new ResizeObserver(resizeCanvas).observe(el.canvas);

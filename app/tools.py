@@ -538,8 +538,10 @@ TOOLS: List[dict] = [
             "name": "exec",
             "description": (
                 "Run a shell command in the workspace (bash). Use for builds, "
-                "git, scripts, and anything else you can do on the machine. "
-                "Keep commands short; output is truncated."
+                "git, scripts, and browser automation with agent-browser. "
+                "For browser work, open a page, snapshot interactive refs, "
+                "act by ref, and re-snapshot after changes. The user can watch "
+                "the browser panel. Keep commands short; output is truncated."
             ),
             "parameters": {
                 "type": "object",

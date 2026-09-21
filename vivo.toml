@@ -101,6 +101,17 @@ cooldown_ms = 700
 # How long vivo's caption stays on screen after the last word of a message. Each new message (filler, acknowledgement, answer part) replaces it.
 caption_linger_s = 22
 
+[browser]
+# Browser stream
+# Maximum browser frames per second. Lower values reduce CPU, GPU, and network use.
+max_fps = 8
+# Browser frame quality. Lower values reduce bandwidth and encoding cost.
+quality = 50
+# Maximum streamed browser width.
+max_width = 1920
+# Maximum streamed browser height.
+max_height = 1080
+
 [wake]
 # Wake phrase
 # Say this to wake vivo: it listens silently for it and ignores everything else, so ambient speech doesn't flood the transcript. Anything after the phrase in the same utterance is answered too. An empty phrase disables the wake word (it answers every utterance).

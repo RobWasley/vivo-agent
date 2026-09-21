@@ -389,6 +389,15 @@ SCHEMA = {
             },
         },
     },
+    "browser": {
+        "title": "Browser stream",
+        "keys": {
+            "max_fps": {"type": "int", "label": "Stream FPS", "help": "Maximum browser frames per second. Lower values reduce CPU, GPU, and network use.", "apply": "now", "min": 1, "max": 30, "step": 1, "attr": "BROWSER_MAX_FPS"},
+            "quality": {"type": "int", "label": "JPEG quality", "help": "Browser frame quality. Lower values reduce bandwidth and encoding cost.", "apply": "restart", "min": 20, "max": 90, "step": 5, "attr": "BROWSER_QUALITY"},
+            "max_width": {"type": "int", "label": "Max width (px)", "help": "Maximum streamed browser width.", "apply": "restart", "min": 320, "max": 1920, "step": 80, "attr": "BROWSER_MAX_WIDTH"},
+            "max_height": {"type": "int", "label": "Max height (px)", "help": "Maximum streamed browser height.", "apply": "restart", "min": 240, "max": 1080, "step": 60, "attr": "BROWSER_MAX_HEIGHT"},
+        },
+    },
     "wake": {
         "title": "Wake phrase",
         "keys": {

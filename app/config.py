@@ -189,6 +189,10 @@ def _emit() -> None:
     # How long the in-ring caption stays on screen after the last word of a
     # message (client-side; sent to the browser in the `config` frame).
     g["UI_CAPTION_LINGER_S"] = _get("ui", "caption_linger_s", "UI_CAPTION_LINGER_S", 8.0, float)
+    g["BROWSER_MAX_FPS"] = _get("browser", "max_fps", "AGENT_BROWSER_STREAM_MAX_FPS", 10, int)
+    g["BROWSER_QUALITY"] = _get("browser", "quality", "AGENT_BROWSER_STREAM_QUALITY", 60, int)
+    g["BROWSER_MAX_WIDTH"] = _get("browser", "max_width", "AGENT_BROWSER_STREAM_MAX_WIDTH", 1280, int)
+    g["BROWSER_MAX_HEIGHT"] = _get("browser", "max_height", "AGENT_BROWSER_STREAM_MAX_HEIGHT", 720, int)
 
     # --- Wake phrase (T024) -------------------------------------------------------
     # Empty phrase = feature off: every utterance is answered (legacy). While
@@ -299,6 +303,12 @@ def effective_dict() -> dict:
         },
         "ui": {
             "caption_linger_s": g["UI_CAPTION_LINGER_S"],
+        },
+        "browser": {
+            "max_fps": g["BROWSER_MAX_FPS"],
+            "quality": g["BROWSER_QUALITY"],
+            "max_width": g["BROWSER_MAX_WIDTH"],
+            "max_height": g["BROWSER_MAX_HEIGHT"],
         },
         "wake": {
             "phrase": g["WAKE_PHRASE"],

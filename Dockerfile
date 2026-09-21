@@ -2,7 +2,9 @@ FROM python:3.11-slim
 
 ENV PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
-    HF_HUB_DISABLE_TELEMETRY=1
+    HF_HUB_DISABLE_TELEMETRY=1 \
+    AGENT_BROWSER_VERSION=0.38.1 \
+    AGENT_BROWSER_SHA256=5100149a1903211c889de4e545bf36d90803740cea4f99aa22651649f9205ea1
 
 WORKDIR /app
 
@@ -12,10 +14,18 @@ COPY requirements.txt .
 # git is needed to install LinaCodec/LuxTTS from git (both are pure Python);
 # removed again afterwards to keep the image lean.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends git \
+    && apt-get install -y --no-install-recommends ca-certificates curl git sudo \
     && pip install --no-cache-dir torch torchaudio --index-url https://download.pytorch.org/whl/cpu \
     && pip install --no-cache-dir -r requirements.txt \
-    && apt-get purge -y git \
+        && curl -fsSL -o /usr/local/bin/agent-browser \
+            "https://github.com/vercel-labs/agent-browser/releases/download/v${AGENT_BROWSER_VERSION}/agent-browser-linux-x64" \
+        && echo "${AGENT_BROWSER_SHA256}  /usr/local/bin/agent-browser" | sha256sum -c - \
+        && chmod 0755 /usr/local/bin/agent-browser \
+        && useradd -m appuser \
+        && agent-browser install --with-deps \
+        && mv /root/.agent-browser /home/appuser/.agent-browser \
+        && chown -R appuser:appuser /home/appuser/.agent-browser \
+        && apt-get purge -y curl git \
     && apt-get autoremove -y \
     && rm -rf /var/lib/apt/lists/*
 
@@ -25,8 +35,9 @@ COPY voices/ ./voices/
 COPY tests/ ./tests/
 COPY vivo.toml ./
 
-RUN useradd -m appuser \
-    && mkdir -p /models /data \
+RUN mkdir -p /models /data \
+    && printf '%s\n' '{"browser":{"args":["--no-sandbox"]}}' > /home/appuser/.agent-browser/config.json \
+    && chown appuser:appuser /home/appuser/.agent-browser/config.json \
     && chown -R appuser:appuser /models /data
 
 USER appuser

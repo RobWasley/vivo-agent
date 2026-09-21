@@ -10,7 +10,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from app import bench, config, config_schema, models, pipeline
+from app import bench, browser_stream, config, config_schema, models, pipeline
 from app.skills import SkillStore
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
@@ -47,6 +47,7 @@ class BenchTTSPayload(BaseModel):
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    browser_stream.apply_config(config)
     await asyncio.to_thread(models.ensure_models, config.MODEL_DIR, config.DATA_DIR)
     app.state.engines = pipeline.Engines()
     log.info("vivo ready (persona: %s)", config.PERSONA[:60])
@@ -95,6 +96,7 @@ async def post_config(body: ConfigPayload, request: Request):
         data[section].update(keys)
     config.write_config(data)
     config.refresh()
+    browser_stream.apply_config(config)
     pipeline.apply_config(engines)
     pipeline.broadcast_config()
     pipeline.broadcast_wake(engines.wake)
@@ -339,6 +341,11 @@ async def delete_session(session_id: str, request: Request):
 async def ws_endpoint(ws: WebSocket):
     await ws.accept()
     await pipeline.serve_session(ws, ws.app.state.engines)
+
+
+@app.websocket("/ws/browser")
+async def browser_ws_endpoint(ws: WebSocket):
+    await browser_stream.serve_browser_stream(ws)
 
 
 app.mount(

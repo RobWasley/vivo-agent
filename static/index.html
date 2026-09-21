@@ -17,11 +17,12 @@
     <div class="bg-glow bg-glow-b"></div>
   </div>
 
-  <div class="stage-root" aria-label="Live voice">
-    <canvas id="dot" aria-label="Vivo state ring"></canvas>
-    <p class="caption" id="caption" aria-live="polite"></p>
-    <p class="hint" id="hint">mic off &middot; click <b>start</b> to allow the microphone</p>
-  </div>
+  <main class="workspace" id="workspace">
+    <div class="stage-root" aria-label="Live voice">
+      <canvas id="dot" aria-label="Vivo state ring"></canvas>
+      <p class="caption" id="caption" aria-live="polite"></p>
+      <p class="hint" id="hint">mic off &middot; click <b>start</b> to allow the microphone</p>
+    </div>
 
   <nav class="sidenav" id="sidenav" aria-label="Controls">
     <div class="nav-brand" aria-hidden="true">
@@ -46,6 +47,13 @@
           <path d="M6.3 6.6a8 8 0 1 0 11.4 0"/>
         </svg>
         <span class="nav-label">Start</span>
+      </button>
+      <button class="nav-btn" id="btn-browser" title="Watch browser" aria-controls="browser-panel" aria-expanded="false">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+          <rect x="3" y="4" width="18" height="16" rx="2"/>
+          <path d="M3 8h18M7 6h.01M10 6h.01"/>
+        </svg>
+        <span class="nav-label">Browser</span>
       </button>
       <button class="nav-btn" id="btn-barage" title="Interrupt me now">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
@@ -168,6 +176,28 @@
     </div>
   </aside>
 
+  <aside class="browser-panel" id="browser-panel" aria-label="Browser viewport" aria-hidden="true">
+    <div class="panel-head">
+      <h2>Browser</h2>
+      <span class="browser-status" id="browser-status">offline</span>
+      <label class="browser-fps" for="browser-fps">fps
+        <select id="browser-fps" title="Live browser stream FPS">
+          <option value="5">5</option>
+          <option value="10" selected>10</option>
+          <option value="15">15</option>
+          <option value="20">20</option>
+          <option value="30">30</option>
+        </select>
+      </label>
+      <button class="ghost tiny" id="browser-close" title="Hide browser">&times;</button>
+    </div>
+    <div class="browser-viewport">
+      <img id="browser-frame" alt="Live browser viewport">
+      <p id="browser-empty">No active browser stream</p>
+    </div>
+    <div class="browser-url" id="browser-url">No page open</div>
+  </aside>
+
   <footer class="telemetry" aria-label="System status">
     <div class="tel">
       <span class="tel-key">Connection</span>
@@ -198,6 +228,7 @@
       </span>
     </label>
   </footer>
+  </main>
 
   <dialog id="settings" class="settings">
     <div class="settings-head">

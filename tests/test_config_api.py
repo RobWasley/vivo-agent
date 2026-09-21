@@ -19,7 +19,7 @@ from app.conversation import SessionStore
 from app.wake import WakeState
 
 ROOT = Path(__file__).resolve().parent.parent
-SECTIONS = ["llm", "persona", "user", "filler", "voice", "stt", "vad", "barge_in", "ui", "wake", "memory", "agent"]
+SECTIONS = ["llm", "persona", "user", "filler", "voice", "stt", "vad", "barge_in", "ui", "browser", "wake", "memory", "agent"]
 
 
 @pytest.fixture()

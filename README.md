@@ -4,7 +4,7 @@ Vivo is a CPU-only voice assistant that runs entirely on your machine in one Doc
 
 Built for local-first personal assistance: quick conversations, file and shell access inside a workspace, memory, reminders, and tools for browsing and task execution without leaving the browser.
 
-![vivo idle UI](vivo-minimal-idle.png)
+![vivo console UI](banner.png)
 
 ## Screenshots
 

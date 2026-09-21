@@ -17,16 +17,6 @@
     <div class="bg-glow bg-glow-b"></div>
   </div>
 
-  <header class="brand-mini" aria-hidden="true">
-    <svg viewBox="0 0 32 32" fill="none">
-      <circle cx="16" cy="16" r="13" stroke="currentColor" stroke-opacity="0.3" stroke-width="1.5"/>
-      <path d="M16 3 A13 13 0 0 1 27.26 9.5" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"/>
-      <path d="M16 29 A13 13 0 0 1 4.74 22.5" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"/>
-      <circle cx="16" cy="16" r="4.5" fill="currentColor"/>
-    </svg>
-    <span>vivo</span>
-  </header>
-
   <div class="stage-root" aria-label="Live voice">
     <canvas id="dot" aria-label="Vivo state ring"></canvas>
     <p class="caption" id="caption" aria-live="polite"></p>
@@ -34,6 +24,15 @@
   </div>
 
   <nav class="sidenav" id="sidenav" aria-label="Controls">
+    <div class="nav-brand" aria-hidden="true">
+      <svg viewBox="0 0 32 32" fill="none">
+        <circle cx="16" cy="16" r="13" stroke="currentColor" stroke-opacity="0.3" stroke-width="1.5"/>
+        <path d="M16 3 A13 13 0 0 1 27.26 9.5" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"/>
+        <path d="M16 29 A13 13 0 0 1 4.74 22.5" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"/>
+        <circle cx="16" cy="16" r="4.5" fill="currentColor"/>
+      </svg>
+      <span class="nav-brand-text">VIVO</span>
+    </div>
     <button class="nav-toggle" id="nav-toggle" title="Expand controls" aria-expanded="false" aria-controls="sidenav">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
         <path d="M9 6l6 6-6 6"/>

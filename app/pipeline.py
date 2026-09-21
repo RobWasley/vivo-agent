@@ -645,6 +645,7 @@ class VoiceSession:
             if not label:
                 return "error: conversation name is required"
             store.rename(session_id, label)
+            self.send({"type": "sessions_changed"})
             return f"renamed conversation {session_id} to {label}"
         if name == "delete_conversation":
             session_id = self._conversation_id(args.get("id"))
@@ -655,6 +656,8 @@ class VoiceSession:
             if was_current:
                 self.switch_session(store.active_id)
                 self.send({"type": "session", "id": self.session_id})
+            else:
+                self.send({"type": "sessions_changed"})
             return f"deleted conversation {session_id}"
         return None
 

@@ -475,6 +475,13 @@ function handleServerJson(m) {
       hydrateTranscript(m.id);
       if (m.created) addEntry("hint", "&mdash; new conversation &mdash;");
       return; // never touches the status UI
+    case "sessions_changed":
+      // another conversation was renamed/deleted by a tool call — refresh the
+      // dropdown without disturbing this tab's current selection
+      loadSessions().then(() => {
+        if (S.sessionId) el.sessionSelect.value = S.sessionId;
+      });
+      return;
     case "pong":
       break;
   }

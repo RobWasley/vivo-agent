@@ -6,6 +6,25 @@ Built for local-first personal assistance: quick conversations, file and shell a
 
 ![vivo idle UI](vivo-minimal-idle.png)
 
+## Screenshots
+
+A quick look at the app in action:
+
+<table>
+  <tr>
+    <td><img src="images/readme/01-main-page.png" width="420" alt="Main page" /></td>
+    <td><img src="images/readme/02-response.png" width="420" alt="Assistant response" /></td>
+  </tr>
+  <tr>
+    <td><img src="images/readme/03-settings.png" width="420" alt="Settings page" /></td>
+    <td><img src="images/readme/04-skills.png" width="420" alt="Skills page" /></td>
+  </tr>
+  <tr>
+    <td><img src="images/readme/05-memory.png" width="420" alt="Memory page" /></td>
+    <td><img src="images/readme/06-transcript.png" width="420" alt="Transcript open" /></td>
+  </tr>
+</table>
+
 ## Features
 
 - **Real-time conversation** — mic audio → VAD → speech-to-text → LLM → text-to-speech, all streaming

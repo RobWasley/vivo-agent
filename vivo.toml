@@ -100,17 +100,19 @@ cooldown_ms = 700
 # UI display
 # How long vivo's caption stays on screen after the last word of a message. Each new message (filler, acknowledgement, answer part) replaces it.
 caption_linger_s = 22
+# Maximum animation rate for the Vivo circle. Lower values reduce browser rendering work.
+visual_fps = 10
 
 [browser]
 # Browser stream
 # Maximum browser frames per second. Lower values reduce CPU, GPU, and network use.
 max_fps = 8
 # Browser frame quality. Lower values reduce bandwidth and encoding cost.
-quality = 50
+quality = 40
 # Maximum streamed browser width.
-max_width = 1920
+max_width = 1280
 # Maximum streamed browser height.
-max_height = 1080
+max_height = 720
 
 [wake]
 # Wake phrase

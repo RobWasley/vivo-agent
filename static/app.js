@@ -64,7 +64,6 @@ const el = {
   browserStatus: $("browser-status"),
   browserUrl: $("browser-url"),
   browserFps: $("browser-fps"),
-  motionPreset: $("motion-preset"),
   settingsDlg: $("settings"),
   settingsBody: $("settings-body"),
   settingsMsg: $("settings-msg"),
@@ -132,13 +131,17 @@ const S = {
   wakeEnabled: false, // wake phrase configured on the server (T024)
   wakeActive: false, // wake-phrase session currently awake
   wakePhrase: "", // the configured phrase, for the UI
-  motionPreset: "balanced",
   prefersReducedMotion: false,
   hydrateToken: 0,
   sessionsById: {},
   browserWs: null,
   browserFramePending: null,
   browserFrameRaf: 0,
+  browserViewport: null,
+  browserPointerPending: null,
+  browserPointerRaf: 0,
+  visualFrame: 0,
+  visualLastFrame: 0,
 };
 
 try { S.sessionId = localStorage.getItem("vivo.session"); } catch (_) { S.sessionId = null; }
@@ -217,6 +220,52 @@ function sendBrowserFps() {
   S.browserWs.send(JSON.stringify({ type: "browser_fps", maxFps: Number.isFinite(fps) ? fps : 10 }));
 }
 
+function sendBrowserInput(event) {
+  if (!S.browserWs || S.browserWs.readyState !== WebSocket.OPEN) return;
+  S.browserWs.send(JSON.stringify(event));
+}
+
+function browserModifiers(event) {
+  return (event.altKey ? 1 : 0)
+    | (event.ctrlKey ? 2 : 0)
+    | (event.metaKey ? 4 : 0)
+    | (event.shiftKey ? 8 : 0);
+}
+
+function browserMouseButton(button) {
+  return ["left", "middle", "right", "back", "forward"][button] || "left";
+}
+
+function browserPointerEvent(event, action) {
+  const viewport = S.browserViewport;
+  const bounds = el.browserFrame.getBoundingClientRect();
+  if (!viewport || !bounds.width || !bounds.height) return null;
+  return {
+    type: "input_mouse",
+    x: Math.max(0, Math.min(viewport.width, (event.clientX - bounds.left) * viewport.width / bounds.width)),
+    y: Math.max(0, Math.min(viewport.height, (event.clientY - bounds.top) * viewport.height / bounds.height)),
+    eventType: action,
+    button: browserMouseButton(event.button),
+    modifiers: browserModifiers(event),
+  };
+}
+
+function browserWheelEvent(event) {
+  const input = browserPointerEvent(event, "mouseWheel");
+  if (!input) return null;
+  input.button = "none";
+  input.deltaX = event.deltaX;
+  input.deltaY = event.deltaY;
+  return input;
+}
+
+function sendPendingBrowserPointer() {
+  S.browserPointerRaf = 0;
+  if (!S.browserPointerPending) return;
+  sendBrowserInput(S.browserPointerPending);
+  S.browserPointerPending = null;
+}
+
 function renderBrowserFrame() {
   S.browserFrameRaf = 0;
   if (!S.browserFramePending) return;
@@ -237,6 +286,12 @@ function connectBrowserWS() {
     if (message.type === "browser_status") {
       setBrowserStatus(message.status);
     } else if (message.type === "frame" && message.data) {
+      const metadata = message.metadata || {};
+      const width = Number(metadata.deviceWidth);
+      const height = Number(metadata.deviceHeight);
+      if (Number.isFinite(width) && width > 0 && Number.isFinite(height) && height > 0) {
+        S.browserViewport = { width, height };
+      }
       S.browserFramePending = message.data;
       if (!S.browserFrameRaf) S.browserFrameRaf = requestAnimationFrame(renderBrowserFrame);
     } else if (message.type === "url") {
@@ -274,11 +329,15 @@ function setBrowserOpen(open) {
     sendBrowserFps();
   }
   else disconnectBrowserWS();
+  draw();
+  scheduleVisualFrame();
 }
 
 function setWsState(s) {
   S.wsState = s;
   updateStatus();
+  draw();
+  scheduleVisualFrame();
 }
 
 function setPipeline(s) {
@@ -288,6 +347,8 @@ function setPipeline(s) {
     S.captionText = "";
   }
   updateStatus();
+  draw();
+  scheduleVisualFrame();
 }
 
 /* ---------------- mic capture ---------------- */
@@ -324,6 +385,9 @@ async function startMic() {
     for (let i = 0; i < input.length; i++) sum += input[i] * input[i];
     const rms = Math.sqrt(sum / input.length);
     S.micLevelTarget = Math.min(1, rms * 6);
+    const percent = Math.round(S.micLevelTarget * 100);
+    el.telMic.textContent = `${percent}%`;
+    el.meterFill.style.width = `${percent}%`;
     checkAutoBarge();
 
     if (S.ws && S.ws.readyState !== WebSocket.OPEN) return;
@@ -340,6 +404,8 @@ async function startMic() {
   const lbl = el.btnStart.querySelector(".nav-label");
   if (lbl) lbl.textContent = "Mute";
   updateWakeUi();
+  draw();
+  scheduleVisualFrame();
 }
 
 function stopMic() {
@@ -359,6 +425,8 @@ function stopMic() {
   if (lbl) lbl.textContent = "Mic";
   updateHint();
   updateStatus();
+  draw();
+  scheduleVisualFrame();
 }
 
 function resampleTo16k(input, fromRate) {
@@ -494,6 +562,8 @@ function handleServerJson(m) {
       if (m.ui) {
         const linger = Number(m.ui.caption_linger_s);
         if (Number.isFinite(linger) && linger > 0) S.captionLingerMs = linger * 1000;
+        const fps = Number(m.ui.visual_fps);
+        if (Number.isFinite(fps) && fps >= 1 && fps <= 30) visualFps = fps;
       }
       if (m.wake) {
         S.wakePhrase = String(m.wake.phrase ?? "");
@@ -508,6 +578,8 @@ function handleServerJson(m) {
     case "dream":
       S.dreaming = !!m.active;
       updateStatus();
+      draw();
+      scheduleVisualFrame();
       return;
     case "start":
       if (S.wakeEnabled && !S.wakeActive) break; // dropped utterance while asleep
@@ -839,6 +911,8 @@ function updateWakeUi() {
   el.telWake.title = el.telWake.textContent;
   updateHint();
   updateStatus();
+  draw();
+  scheduleVisualFrame();
 }
 
 function updateHint() {
@@ -863,11 +937,12 @@ function updateHint() {
 
 const canvas = el.canvas;
 const c2d = canvas.getContext("2d");
+let visualFps = 24;
 let t = 0;
 let telTick = 0;
 
 function resizeCanvas() {
-  const dpr = window.devicePixelRatio || 1;
+  const dpr = Math.min(window.devicePixelRatio || 1, 1.5);
   const rect = canvas.getBoundingClientRect();
   canvas.width = Math.max(1, Math.floor(rect.width * dpr));
   canvas.height = Math.max(1, Math.floor(rect.height * dpr));
@@ -897,13 +972,6 @@ const STATE_COLORS = {
   mic_off: [rgbOf("#8a96a8"), rgbOf("#202836")],
 };
 
-const MOTION_PRESETS = {
-  calm: { speed: 0.6, glow: 0.65, ripple: 0.55, orbit: 0.55 },
-  balanced: { speed: 1, glow: 1, ripple: 1, orbit: 1 },
-  expressive: { speed: 1.5, glow: 1.4, ripple: 1.5, orbit: 1.5 },
-};
-
-const MOTION = { ...MOTION_PRESETS.balanced };
 const VISUAL_TRANSITION_MS = 260;
 const visual = { from: "idle", to: "idle", startedAt: performance.now() };
 
@@ -943,30 +1011,11 @@ function stateWeight(name, p) {
   return fromW + toW;
 }
 
-function applyMotionPreset(name, persist = true) {
-  const key = Object.prototype.hasOwnProperty.call(MOTION_PRESETS, name) ? name : "balanced";
-  S.motionPreset = key;
-  if (el.motionPreset) el.motionPreset.value = key;
-
-  const scale = S.prefersReducedMotion ? 0.62 : 1;
-  const src = MOTION_PRESETS[key];
-  for (const k of Object.keys(MOTION)) MOTION[k] = src[k] * scale;
-
-  if (persist) {
-    try { localStorage.setItem("vivo.motionPreset", key); } catch (_) {}
-  }
-}
-
 function setReducedMotion(enabled) {
   S.prefersReducedMotion = !!enabled;
-  applyMotionPreset(S.motionPreset, false);
 }
 
 function initMotionControls() {
-  let saved = null;
-  try { saved = localStorage.getItem("vivo.motionPreset"); } catch (_) {}
-  S.motionPreset = Object.prototype.hasOwnProperty.call(MOTION_PRESETS, saved) ? saved : "balanced";
-
   if (window.matchMedia) {
     const mq = window.matchMedia("(prefers-reduced-motion: reduce)");
     setReducedMotion(mq.matches);
@@ -977,7 +1026,6 @@ function initMotionControls() {
     setReducedMotion(false);
   }
 
-  applyMotionPreset(S.motionPreset, false);
 }
 
 function currentDotState() {
@@ -1237,8 +1285,32 @@ function drawMicOff(cx, cy, R, weight) {
 
 /* ---------------- frame loop ---------------- */
 
-function frame() {
-  t += (1 / 60) * MOTION.speed;
+function visualNeedsAnimation() {
+  if (document.hidden || document.body.classList.contains("browser-open")) return false;
+  if (visual.from !== visual.to && visualProgress(performance.now()) < 1) return true;
+  return true;
+}
+
+function scheduleVisualFrame() {
+  const active = visualNeedsAnimation();
+  document.body.classList.toggle("visual-active", active);
+  if (!active) {
+    S.visualLastFrame = 0;
+    return;
+  }
+  if (!S.visualFrame) S.visualFrame = requestAnimationFrame(frame);
+}
+
+function frame(now) {
+  S.visualFrame = 0;
+  const frameMs = 1000 / visualFps;
+  if (S.visualLastFrame && now - S.visualLastFrame < frameMs) {
+    scheduleVisualFrame();
+    return;
+  }
+  const elapsed = S.visualLastFrame ? Math.min((now - S.visualLastFrame) / 1000, 0.1) : 1 / visualFps;
+  S.visualLastFrame = now;
+  t += elapsed;
   S.micLevel = smoothLevel(S.micLevel, S.micLevelTarget);
   S.playLevel = smoothLevel(S.playLevel, readPlayLevel());
 
@@ -1247,7 +1319,7 @@ function frame() {
   if (++telTick % 10 === 0) el.telMic.textContent = `${Math.round(S.micLevel * 100)}%`;
 
   el.meterFill.style.width = `${Math.round(S.micLevel * 100)}%`;
-  requestAnimationFrame(frame);
+  scheduleVisualFrame();
 }
 
 function draw() {
@@ -1256,7 +1328,6 @@ function draw() {
   c2d.clearRect(0, 0, w, h);
   const cx = w / 2, cy = h * 0.46;
 
-  const level = Math.max(S.micLevel, S.playLevel);
   const coreState = currentDotState();
   updateVisualTarget(coreState, now);
   const progress = visualProgress(now);
@@ -1264,42 +1335,42 @@ function draw() {
   const f = STATE_COLORS[visual.from] || STATE_COLORS.idle;
   const to = STATE_COLORS[visual.to] || STATE_COLORS.idle;
   const inner = mixRgb(f[0], to[0], progress);
-  const outer = mixRgb(f[1], to[1], progress);
+  const pulseAmount = coreState === "speaking" ? 0.05 : coreState === "thinking" ? 0.035 : 0.018;
+  const pulse = 1 + pulseAmount * Math.sin(t * (coreState === "asleep" ? 0.8 : 1.5));
+  const radius = Math.min(w, h) * 0.19 * pulse;
+  const color = rgba(inner, 1);
+  const opacity = coreState === "mic_off" ? 0.35 : coreState === "asleep" ? 0.48 : 0.75;
 
-  const speakingW = stateWeight("speaking", progress);
-  const thinkingW = stateWeight("thinking", progress);
-  const dreamingW = stateWeight("dreaming", progress);
-  const asleepW = stateWeight("asleep", progress);
-  const micOffW = stateWeight("mic_off", progress);
-  const listeningW = stateWeight("listening", progress);
-  const connectingW = stateWeight("connecting", progress);
-  const closedW = stateWeight("closed", progress);
+  c2d.save();
+  c2d.strokeStyle = color;
+  c2d.globalAlpha = opacity;
+  c2d.lineWidth = Math.max(2, radius * 0.018);
+  c2d.beginPath();
+  c2d.arc(cx, cy, radius, 0, Math.PI * 2);
+  c2d.stroke();
+  c2d.globalAlpha = Math.min(1, opacity + 0.15);
+  c2d.fillStyle = color;
+  c2d.beginPath();
+  c2d.arc(cx, cy, Math.max(4, radius * 0.09), 0, Math.PI * 2);
+  c2d.fill();
 
-  // asleep: no level response, dim the stack, slow the rotation
-  const inactiveW = Math.max(asleepW, micOffW);
-  const reactLevel = level * (1 - inactiveW);
-  const dim = 1 - inactiveW * 0.72;
-  const flicker = closedW > 0.02
-    ? (1 - closedW) + closedW * (0.55 + 0.45 * Math.sin(t * 3.7))
-    : 1;
-
-  const base = Math.min(w, h) * 0.27;
-  const R = base * (1 + reactLevel * 0.05);
-
-  drawTicks(cx, cy, R, t, inner, dim * flicker, reactLevel);
-  drawOrbit(cx, cy, R, t, inner, dim * flicker, reactLevel);
-  drawMainRing(cx, cy, R, t, inner, dim * flicker, reactLevel, speakingW);
-  drawInnerDash(cx, cy, R, t, inner, dim * flicker);
-  drawCore(cx, cy, R, inner, outer, reactLevel, dim * flicker, t);
-
-  drawConnecting(cx, cy, R, t, connectingW);
-  drawClosedFlicker(cx, cy, R, t, closedW);
-  drawListeningRipples(cx, cy, R, t, listeningW);
-  drawThinkingDots(cx, cy, R, t, thinkingW);
-  drawSpeakingWave(cx, cy, R, t, speakingW, reactLevel);
-  drawDreaming(cx, cy, R, t, dreamingW);
-  drawAsleep(cx, cy, R, t, asleepW);
-  drawMicOff(cx, cy, R, micOffW);
+  c2d.shadowColor = color;
+  c2d.shadowBlur = radius * 0.08;
+  for (let index = 0; index < 3; index++) {
+    const angle = t * (S.prefersReducedMotion ? 0.12 : 0.32) + index * Math.PI * 2 / 3;
+    const dotRadius = Math.max(2, radius * 0.025);
+    c2d.globalAlpha = Math.min(1, opacity + 0.05);
+    c2d.beginPath();
+    c2d.arc(
+      cx + Math.cos(angle) * radius * 1.18,
+      cy + Math.sin(angle) * radius * 1.18,
+      dotRadius,
+      0,
+      Math.PI * 2,
+    );
+    c2d.fill();
+  }
+  c2d.restore();
 }
 
 /* ---------------- settings pane (T019) ----------------
@@ -2336,10 +2407,6 @@ el.transcriptToggle.addEventListener("click", () =>
   setTranscriptOpen(!document.body.classList.contains("transcript-open")));
 el.transcriptClose.addEventListener("click", () => setTranscriptOpen(false));
 
-if (el.motionPreset) {
-  el.motionPreset.addEventListener("change", () => applyMotionPreset(el.motionPreset.value));
-}
-
 el.btnSettings.addEventListener("click", openSettings);
 el.btnSettingsSave.addEventListener("click", saveSettings);
 const closeSettings = () => el.settingsDlg.close();
@@ -2376,15 +2443,70 @@ el.btnBrowser.addEventListener("click", () =>
   setBrowserOpen(!document.body.classList.contains("browser-open")));
 el.browserClose.addEventListener("click", () => setBrowserOpen(false));
 el.browserFps.addEventListener("change", sendBrowserFps);
+el.browserFrame.addEventListener("pointermove", (event) => {
+  S.browserPointerPending = browserPointerEvent(event, "mouseMoved");
+  if (S.browserPointerPending && !S.browserPointerRaf) {
+    S.browserPointerRaf = requestAnimationFrame(sendPendingBrowserPointer);
+  }
+});
+el.browserFrame.addEventListener("wheel", (event) => {
+  const input = browserWheelEvent(event);
+  if (!input) return;
+  event.preventDefault();
+  sendBrowserInput(input);
+}, { passive: false });
+el.browserFrame.addEventListener("pointerdown", (event) => {
+  const input = browserPointerEvent(event, "mousePressed");
+  if (!input) return;
+  event.preventDefault();
+  el.browserFrame.setPointerCapture(event.pointerId);
+  el.browserFrame.focus();
+  sendBrowserInput(input);
+});
+el.browserFrame.addEventListener("pointerup", (event) => {
+  const input = browserPointerEvent(event, "mouseReleased");
+  if (!input) return;
+  event.preventDefault();
+  if (el.browserFrame.hasPointerCapture(event.pointerId)) {
+    el.browserFrame.releasePointerCapture(event.pointerId);
+  }
+  sendBrowserInput(input);
+});
+el.browserFrame.addEventListener("pointercancel", (event) => {
+  const input = browserPointerEvent(event, "mouseReleased");
+  if (input) sendBrowserInput(input);
+});
+el.browserFrame.addEventListener("keydown", (event) => {
+  if (!event.key) return;
+  event.preventDefault();
+  sendBrowserInput({
+    type: "input_keyboard", eventType: "keyDown", key: event.key, code: event.code,
+    text: event.key.length === 1 ? event.key : "", modifiers: browserModifiers(event),
+  });
+});
+el.browserFrame.addEventListener("keyup", (event) => {
+  if (!event.key) return;
+  event.preventDefault();
+  sendBrowserInput({
+    type: "input_keyboard", eventType: "keyUp", key: event.key, code: event.code,
+    text: "", modifiers: browserModifiers(event),
+  });
+});
 
 window.addEventListener("resize", resizeCanvas);
 new ResizeObserver(resizeCanvas).observe(el.canvas);
+document.addEventListener("visibilitychange", () => {
+  if (!document.hidden) {
+    draw();
+    scheduleVisualFrame();
+  }
+});
 window.addEventListener("load", () => {
   setOutputVolume(S.outputVolume);
   initMotionControls();
   resizeCanvas();
   loadSessions().then(connectWS); // bind a session before opening the socket
-  requestAnimationFrame(frame);
+  scheduleVisualFrame();
   if (!window.isSecureContext || !navigator.mediaDevices) {
     el.btnStart.disabled = true;
     el.hint.innerHTML = "mic blocked &mdash; not a secure context";

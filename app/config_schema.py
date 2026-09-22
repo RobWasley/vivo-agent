@@ -387,6 +387,16 @@ SCHEMA = {
                 "step": 0.5,
                 "attr": "UI_CAPTION_LINGER_S",
             },
+            "visual_fps": {
+                "type": "int",
+                "label": "Circle FPS",
+                "help": "Maximum animation rate for the Vivo circle. Lower values reduce browser rendering work.",
+                "apply": "now",
+                "min": 1,
+                "max": 30,
+                "step": 1,
+                "attr": "UI_VISUAL_FPS",
+            },
         },
     },
     "browser": {

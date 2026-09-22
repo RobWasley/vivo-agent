@@ -1,5 +1,6 @@
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from concurrent.futures import ThreadPoolExecutor
 
 from app import config, main, tools
 from app.memory import MemoryStore
@@ -41,6 +42,16 @@ def test_memory_tools_use_data_directory(tmp_path, monkeypatch):
 
     assert tools.execute("remember", {"fact": "Rob prefers short answers"}) == "memory saved"
     assert "Rob prefers short answers" in tools.execute("read_memory", {})
+
+
+def test_parallel_memory_writes_preserve_every_fact(tmp_path):
+    memory_path = str(tmp_path / "memory.md")
+    facts = [f"Fact {index}" for index in range(8)]
+
+    with ThreadPoolExecutor(max_workers=len(facts)) as pool:
+        list(pool.map(lambda fact: MemoryStore(memory_path).observe(fact), facts))
+
+    assert {item["text"] for item in MemoryStore(memory_path).list()} == set(facts)
 
 
 def test_memory_api_manages_archive_and_core(tmp_path):

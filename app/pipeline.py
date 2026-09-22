@@ -1180,6 +1180,7 @@ def config_msg() -> dict:
         "wake": {"phrase": config.WAKE_PHRASE},
         "ui": {
             "caption_linger_s": config.UI_CAPTION_LINGER_S,
+            "visual_fps": config.UI_VISUAL_FPS,
         },
         "audio": {
             "tts_sample_rate": config.TTS_SAMPLE_RATE,

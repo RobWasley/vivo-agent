@@ -563,6 +563,30 @@ TOOLS: List[dict] = [
     {
         "type": "function",
         "function": {
+            "name": "browser_view",
+            "description": (
+                "Open or close the live browser viewport in the user's UI. "
+                "Call with action 'open' before starting agent-browser work so "
+                "the user can watch, and action 'close' when the user asks to "
+                "close the browser or the browsing task is finished (this also "
+                "shuts the browser down and returns the UI to the voice view)."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["open", "close"],
+                        "description": "'open' shows the viewport, 'close' closes it and the browser.",
+                    },
+                },
+                "required": ["action"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "web_search",
             "description": "Search the web (DuckDuckGo). Returns titles, URLs, and snippets.",
             "parameters": {

@@ -127,8 +127,17 @@ def test_conversation_tools_are_advertised_to_the_agent():
     names = {tool["function"]["name"] for tool in tools.TOOLS}
     assert {
         "list_conversations", "create_conversation", "switch_conversation",
-        "rename_conversation", "delete_conversation",
+        "rename_conversation", "delete_conversation", "browser_view",
     } <= names
+
+
+def test_browser_view_schema_requires_action():
+    schema = next(
+        tool for tool in tools.TOOLS if tool["function"]["name"] == "browser_view"
+    )
+    fn = schema["function"]
+    assert fn["parameters"]["required"] == ["action"]
+    assert fn["parameters"]["properties"]["action"]["enum"] == ["open", "close"]
 
 
 def test_tool_registry_validates_and_executes():

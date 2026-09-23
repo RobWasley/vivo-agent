@@ -64,7 +64,13 @@ Protocol (JSON text frames unless noted):
                                    the client); `filler` marks a thinking
                                    filler phrase
     {"type":"tool","name","result","status","duration_ms"[,"error_kind"]}
-                                  a tool was executed; status is `ok` or `error`
+                                   a tool was executed; status is `ok` or `error`
+    {"type":"browser_view","action":"open"|"close"}
+                                   the browser_view tool was called: the
+                                   client's browser viewport panel opens (so the
+                                   user can watch agent-browser) or closes
+                                   (back to the voice view; the browser itself
+                                   is shut down on close)
     binary                    int16 mono TTS PCM (one chunk per sentence,
                                   sample rate in config.audio.tts_sample_rate)
     {"type":"barge_ack"}
@@ -659,6 +665,17 @@ class VoiceSession:
             else:
                 self.send({"type": "sessions_changed"})
             return f"deleted conversation {session_id}"
+        if name == "browser_view":
+            action = str(args.get("action") or "").strip().lower()
+            if action not in ("open", "close"):
+                return "error: action must be 'open' or 'close'"
+            self.send({"type": "browser_view", "action": action})
+            if action == "open":
+                return "browser view opened"
+            output = shell.run_shell("agent-browser close", timeout=30)
+            if "Exit code: 0" in output:
+                return "browser closed and the view returned to voice"
+            return "browser view closed, but agent-browser close reported: " + output.strip()
         return None
 
     def release(self) -> None:

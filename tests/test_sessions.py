@@ -317,6 +317,99 @@ def test_conversation_tools_manage_current_session():
     asyncio.run(go())
 
 
+class _CaptureWS:
+    def __init__(self) -> None:
+        self.texts: list[str] = []
+
+    async def send_text(self, t: str) -> None:
+        self.texts.append(t)
+
+    async def send_bytes(self, b: bytes) -> None:
+        pass
+
+
+def _frames(ws: _CaptureWS) -> list[dict]:
+    return [json.loads(t) for t in ws.texts]
+
+
+def test_browser_view_tool_opens_view(monkeypatch):
+    store = SessionStore()
+    engines = _engines(store)
+    calls: list = []
+    monkeypatch.setattr(
+        pipeline.shell, "run_shell",
+        lambda command, **kwargs: (calls.append((command, kwargs)), "Exit code: 0")[1],
+    )
+
+    async def go() -> None:
+        ws = _CaptureWS()
+        session = VoiceSession(ws, engines)
+        result = session.execute_conversation_tool("browser_view", {"action": "open"})
+        await asyncio.sleep(0.05)
+        assert result == "browser view opened"
+        assert {"type": "browser_view", "action": "open"} in _frames(ws)
+        assert calls == []  # opening the view does not touch the shell
+
+    asyncio.run(go())
+
+
+def test_browser_view_tool_close_shuts_browser_and_closes_view(monkeypatch):
+    store = SessionStore()
+    engines = _engines(store)
+    calls: list = []
+
+    def fake_run_shell(command, **kwargs):
+        calls.append((command, kwargs))
+        return "Exit code: 0"
+
+    monkeypatch.setattr(pipeline.shell, "run_shell", fake_run_shell)
+
+    async def go() -> None:
+        ws = _CaptureWS()
+        session = VoiceSession(ws, engines)
+        result = session.execute_conversation_tool("browser_view", {"action": "close"})
+        await asyncio.sleep(0.05)
+        assert result == "browser closed and the view returned to voice"
+        assert {"type": "browser_view", "action": "close"} in _frames(ws)
+        assert calls == [("agent-browser close", {"timeout": 30})]
+
+    asyncio.run(go())
+
+
+def test_browser_view_tool_close_reports_shell_failure(monkeypatch):
+    store = SessionStore()
+    engines = _engines(store)
+    monkeypatch.setattr(pipeline.shell, "run_shell", lambda *a, **k: "Exit code: 1")
+
+    async def go() -> None:
+        ws = _CaptureWS()
+        session = VoiceSession(ws, engines)
+        result = session.execute_conversation_tool("browser_view", {"action": "close"})
+        await asyncio.sleep(0.05)
+        assert "reported" in result
+        assert {"type": "browser_view", "action": "close"} in _frames(ws)
+
+    asyncio.run(go())
+
+
+def test_browser_view_tool_rejects_bad_action(monkeypatch):
+    store = SessionStore()
+    engines = _engines(store)
+    monkeypatch.setattr(pipeline.shell, "run_shell", lambda *a, **k: ("Exit code: 0", calls.append(1)))
+
+    async def go() -> None:
+        ws = _CaptureWS()
+        session = VoiceSession(ws, engines)
+        result = session.execute_conversation_tool("browser_view", {"action": "zoom"})
+        await asyncio.sleep(0.05)
+        assert result.startswith("error:")
+        assert not _frames(ws)
+        assert calls == []
+
+    calls: list = []
+    asyncio.run(go())
+
+
 def test_execute_tool_reports_timing_and_safe_error_kind(monkeypatch):
     store = SessionStore()
     engines = _engines(store)

@@ -581,6 +581,10 @@ function handleServerJson(m) {
       draw();
       scheduleVisualFrame();
       return;
+    case "browser_view":
+      // the browser_view tool toggles the viewport panel for the user
+      if (m.action === "open" || m.action === "close") setBrowserOpen(m.action === "open");
+      return;
     case "start":
       if (S.wakeEnabled && !S.wakeActive) break; // dropped utterance while asleep
       setPipeline("listening");

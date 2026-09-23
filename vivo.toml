@@ -110,9 +110,9 @@ max_fps = 10
 # Browser frame quality. Lower values reduce bandwidth and encoding cost.
 quality = 40
 # Maximum streamed browser width.
-max_width = 1280
+max_width = 1920
 # Maximum streamed browser height.
-max_height = 720
+max_height = 1080
 
 [wake]
 # Wake phrase

@@ -847,8 +847,9 @@ body.browser-open .browser-viewport {
 }
 
 body.browser-open .browser-viewport img {
-  height: 100%;
-  aspect-ratio: 16 / 9 !important;
+  width: min(100%, 1280px);
+  aspect-ratio: 16 / 9;
+  max-height: 100%;
 }
 
 body.browser-open .caption {

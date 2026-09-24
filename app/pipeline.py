@@ -457,28 +457,156 @@ class Engines:
             config.WAKE_PHRASE, config.WAKE_END_PHRASES, config.WAKE_SESSION_TIMEOUT_S
         )
 
+    def _reminder_targets(self, session_id: str | None) -> list:
+        """Open connections that should receive this reminder: the attached
+        conversation's, or all open sessions when it is unattached."""
+        return [
+            s for s in list(_ACTIVE)
+            if not s.closed and (not session_id or s.session_id == session_id)
+        ]
+
     def _handle_due_reminder(self, reminder: dict) -> None:
         text = str(reminder.get("text", "Reminder")).strip()
-        spoken = reminder_message(text)
+        item_type = str(reminder.get("type") or "reminder")
+        response = str(reminder.get("response") or "spoken")
+        session_id = reminder.get("session_id")
+        if item_type == "task":
+            self._run_task(text, session_id, reminder.get("id"), response)
+            return
         self.memory.observe(f"Reminder fired: {text}")
-        payload = {"type": "reminder", "text": spoken}
-        for session in list(_ACTIVE):
-            if session.closed:
-                continue
-            session.send(payload)
+        spoken = reminder_message(text)
+        payload = {"type": "reminder", "text": spoken, "response": response}
+        targets = self._reminder_targets(session_id)
+        audio = None
+        if response == "spoken":
             try:
                 audio = self.tts.synthesize(spoken)
             except Exception:  # pragma: no cover - degrade gracefully for reminders
                 log.exception("reminder TTS synthesis failed for %r", spoken)
+                audio = None
+        for session in targets:
+            self._deliver_reminder(session, payload, audio)
+        if not targets:
+            log.info("%s reminder fired with no open console: %s", response, spoken)
+        else:
+            log.info("reminder fired: %s", spoken)
+
+    def _deliver_reminder(
+        self, session: "VoiceSession", payload: dict, audio
+    ) -> None:
+        """Send a plain reminder through the session's reply slot so its audio
+        cannot interleave with an in-flight reply (and its reply_done cannot
+        end one early). Waits for an in-flight reply to finish first;
+        barge-in cancels it like any reply."""
+        acquired = session.begin_scheduled_reply()
+        if acquired is None:
+            return
+        gen, _q = acquired
+        try:
+            session.send(payload)
+            if audio is not None and audio.size:
+                pcm16 = (np.clip(audio, -1.0, 1.0) * 32767).astype("<i2")
+                session.send(pcm16.tobytes())
+        finally:
+            if session.end_scheduled_reply(gen) and not session.closed:
                 session.send({"type": "reply_done"})
-                continue
-            if audio.size == 0:
-                session.send({"type": "reply_done"})
-                continue
-            pcm16 = (np.clip(audio, -1.0, 1.0) * 32767).astype("<i2")
-            session.send(pcm16.tobytes())
+
+    def _run_task(self, text: str, session_id: str | None, reminder_id: str | None = None, response: str = "text") -> None:
+        """Scheduled task (type=task): the LLM carries out `text` with its
+        normal tools. Attached to a conversation it runs in that
+        conversation's context and the exchange is stored there; otherwise it
+        runs standalone. The result is shown as text (and spoken too when the
+        task's response is `spoken`) and kept on the task as its
+        last_response."""
+        conv = None
+        if session_id and session_id in self.sessions.ids():
+            conv = self.sessions.conversation_for(session_id)
+
+        def execute(name: str, args: dict) -> str:
+            return tools.execute(name, args)
+
+        self.agent.user_profile = agent_context(self.memory, self.skills)
+        answer = ""
+        try:
+            chunks: list[str] = []
+            for item in self.agent.reply(
+                text, execute, history=conv.messages() if conv is not None else None
+            ):
+                if isinstance(item, (ReasoningDelta, ToolRound)):
+                    continue
+                chunks.append(item)
+            answer = "".join(chunks).strip()
+        except Exception:  # noqa: BLE001 - a failed task must not kill the scheduler
+            log.exception("scheduled task failed: %r", text)
+        if not answer:
+            log.warning("scheduled task produced no result: %r", text)
+            return
+        if reminder_id:
+            try:
+                self.reminders.set_last_response(reminder_id, answer)
+            except (KeyError, OSError):  # the item may have been deleted meanwhile
+                pass
+        if conv is not None:
+            conv.add_turn(text, answer)
+            conv.maybe_compact(self.agent.summarize)
+        self.memory.observe(f"Scheduled task ran: {text}")
+        targets = self._reminder_targets(session_id)
+        if response == "spoken":
+            for session in targets:
+                self._speak_task_answer(session, answer)
+        else:
+            for session in targets:
+                if not session.closed:
+                    session.send({"type": "agent_text", "delta": answer, "start": True})
+                    session.send({"type": "reply_done"})
+        log.info("scheduled task finished: %s", text)
+
+    def _speak_task_answer(self, session: VoiceSession, answer: str) -> None:
+        """Speak a task's answer through the session's normal reply machinery
+        instead of one synthesis: sentence-chunked (a single one-shot
+        synthesis of a long answer garbles, so it goes through the same
+        chunker and sentence cap as live replies), one bounded TTS queue,
+        one worker, generation-gated.
+
+        The speech takes the session's reply slot: it waits for an in-flight
+        reply to finish so the audio can never interleave with the
+        conversation, and barge-in cancels it like any reply. The caption
+        keeps the raw (markdown) answer; only the synthesized text is
+        cleaned.
+        """
+        speakable = _speakable(answer) or answer
+        chunker = SentenceChunker(
+            max_chars=config.SENTENCE_MAX_CHARS,
+            clause_max_chars=config.CLAUSE_MAX_CHARS,
+        )
+        sentences = list(chunker.add(speakable)) + chunker.flush()
+        if not sentences:
+            return
+        acquired = session.begin_scheduled_reply()
+        if acquired is None:
+            return
+        gen, q = acquired
+        bench = Bench(time.monotonic())
+        worker = threading.Thread(
+            target=_tts_worker, args=(q, session, gen, bench), daemon=True
+        )
+        worker.start()
+        n = 0
+        try:
+            session.send({"type": "agent_text", "delta": answer, "start": True})
+            for sentence in sentences:
+                if not session.alive(gen):
+                    break
+                n += 1
+                bench.mark(f"sentence_{n}_ready")
+                q.put((n, sentence, "tts"))
+        finally:
+            q.put(_TTS_DONE)
+            worker.join()
+        if session.end_scheduled_reply(gen) and not session.closed:
             session.send({"type": "reply_done"})
-        log.info("reminder fired: %s", spoken)
+            bench.mark("reply_done")
+        bench.report(gen, sentences=n, queue_max=config.TTS_QUEUE_SIZE)
 
     def _handle_dream_state(self, active: bool) -> None:
         broadcast_dream_state(active)
@@ -583,6 +711,7 @@ class VoiceSession:
             max_speech_s=config.VAD_MAX_SPEECH_S,
         )
         self.lock = threading.Lock()
+        self._slot_cv = threading.Condition(self.lock)
         self.reply_active = False
         self.generation = 0
         self.closed = False
@@ -692,6 +821,7 @@ class VoiceSession:
             self.generation += 1
             self.barge_mono[self.generation - 1] = time.monotonic()
             q, self.tts_queue = self.tts_queue, None
+            self._slot_cv.notify_all()
         if q is not None:
             while True:
                 try:
@@ -703,6 +833,40 @@ class VoiceSession:
                     # and the producer blocks in worker.join() until it does
                     q.put_nowait(_TTS_DONE)
                     break
+
+    def begin_scheduled_reply(self) -> tuple[int, "queue_mod.Queue"] | None:
+        """Acquire the reply slot for scheduled speech (tasks, reminders).
+
+        Waits until any in-flight reply (user utterance or earlier scheduled
+        speech) has finished, then takes over the same generation machinery
+        as a normal reply, so the speech is streamed sentence-by-sentence and
+        barge-in cancels it like any reply. Returns (generation, tts_queue),
+        or None if the session closed while waiting.
+        """
+        with self._slot_cv:
+            while self.reply_active and not self.closed:
+                if not self._slot_cv.wait(timeout=1.0):
+                    continue
+            if self.closed:
+                return None
+            self.reply_active = True
+            self.generation += 1
+            gen = self.generation
+            q = queue_mod.Queue(maxsize=config.TTS_QUEUE_SIZE)
+            self.tts_queue = q
+            return gen, q
+
+    def end_scheduled_reply(self, gen: int) -> bool:
+        """Release the slot after scheduled speech finished (or was barged
+        into). False if a barge-in already took over this generation."""
+        with self._slot_cv:
+            if self.generation != gen:
+                return False
+            self.reply_active = False
+            self.generation += 1
+            self.tts_queue = None
+            self._slot_cv.notify_all()
+            return True
 
     def send(self, payload) -> None:
         """Thread-safe send; a vanished client just marks the session closed."""
@@ -754,6 +918,25 @@ class VoiceSession:
             daemon=True,
         ).start()
         return True
+
+
+_SPEAKABLE_RULES = (
+    (re.compile(r"\[([^\]]+)\]\([^)]*\)"), r"\1"),   # [text](url) -> text
+    (re.compile(r"^#{1,6}\s+", re.M), ""),            # headers
+    (re.compile(r"\*\*([^*]+)\*\*"), r"\1"),          # **bold**
+    (re.compile(r"`([^`]*)`"), r"\1"),                # `code`
+    (re.compile(r"\*([^*\n]+)\*"), r"\1"),            # *italic*
+    (re.compile(r"^\s*[-•]\s+", re.M), ""),           # bullet markers
+)
+
+
+def _speakable(text: str) -> str:
+    """A speakable form of an LLM answer: markdown markup stripped, whitespace
+    collapsed. The caption keeps the raw answer; only the TTS input is
+    cleaned, so no markup ever reaches the synthesizer."""
+    for pattern, repl in _SPEAKABLE_RULES:
+        text = pattern.sub(repl, text)
+    return re.sub(r"\s+", " ", text).strip()
 
 
 def _tts_worker(
@@ -948,6 +1131,7 @@ def _handle_utterance(
                 session.reply_active = False
                 session.generation += 1
                 session.tts_queue = None
+            session._slot_cv.notify_all()
         answer = "".join(spoken).strip()
         if answer:
             conv.add_turn(text, answer)
@@ -1085,6 +1269,7 @@ def _handle_text_utterance(
                 session.reply_active = False
                 session.generation += 1
                 session.tts_queue = None
+            session._slot_cv.notify_all()
         answer = "".join(spoken).strip()
         if answer:
             conv.add_turn(text, answer)

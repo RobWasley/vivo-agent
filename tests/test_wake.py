@@ -113,6 +113,8 @@ def wake_engines(text: str, agent, tts: FakeTTS, wake: WakeState):
         stt=SimpleNamespace(transcribe=lambda samples: text),
         tts=tts,
         agent=agent,
+        memory=SimpleNamespace(core_summary=lambda: "No important memory yet."),
+        skills=SimpleNamespace(index=lambda: ""),
         sessions=SessionStore(),  # in-memory: no data_dir
         wake=wake,
     )
@@ -215,7 +217,8 @@ def test_end_phrase_ends_session_with_goodnight():
     assert [e["active"] for e in ws.texts("wake")] == [False]
     assert agent.prompts == []
     assert "".join(e["delta"] for e in ws.texts("agent_text")) == config.WAKE_GOODNIGHT
-    assert tts.calls == [config.WAKE_GOODNIGHT]
+    # the fixed reply goes through the sentence chunker: one call per sentence
+    assert " ".join(tts.calls) == config.WAKE_GOODNIGHT
 
 
 def test_idle_timeout_sleeps_and_speaks_goodnight():

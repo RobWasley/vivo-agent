@@ -46,6 +46,11 @@ class FakeWS:
         with self._lock:
             return [d for k, d in self._frames if k == "text" and d.get("type") == kind]
 
+    def frames(self) -> list[tuple[str, object]]:
+        """All frames in arrival order: ("audio", byte_len) or ("text", dict)."""
+        with self._lock:
+            return list(self._frames)
+
 
 class FakeTTS:
     def __init__(self, delay: float = 0.02, secs: float = 0.05) -> None:
@@ -84,6 +89,8 @@ def make_engines(agent: FakeAgent, tts: FakeTTS):
         stt=SimpleNamespace(transcribe=lambda samples: "hello there"),
         tts=tts,
         agent=agent,
+        memory=SimpleNamespace(core_summary=lambda: "No important memory yet."),
+        skills=SimpleNamespace(index=lambda: ""),
         sessions=SessionStore(),  # in-memory: no data_dir
         wake=WakeState(),  # disabled (no phrase): legacy always-answer behavior
     )
@@ -223,6 +230,95 @@ def test_barge_after_generation_complete_does_not_deadlock():
         assert len(threading.enumerate()) == n0, \
             "producer/worker threads leaked (worker lost its sentinel)"
         assert ws.audio_frames() == 1  # s2 was synthesized but never sent
+        assert len(ws.texts("reply_done")) == 0  # cancelled: no reply_done
+
+    asyncio.run(go())
+
+
+def _task_engines(agent: FakeAgent, tts: FakeTTS):
+    """Engines for _run_task: a real Engines instance (for its methods) with
+    the same fake attributes as make_engines, plus memory.observe."""
+    base = make_engines(agent, tts)
+    base.memory = SimpleNamespace(
+        core_summary=lambda: "No important memory yet.", observe=lambda t: None
+    )
+    engines = object.__new__(pipeline.Engines)
+    for name in ("stt", "tts", "agent", "memory", "skills", "sessions", "wake"):
+        setattr(engines, name, getattr(base, name))
+    return engines
+
+
+def test_scheduled_task_waits_for_active_reply(monkeypatch):
+    """A spoken task takes the session's reply slot: it waits for the
+    in-flight reply to finish, so its audio starts only after the reply's
+    last audio frame (no interleaving with the conversation)."""
+    deltas = [f"S{i}. " for i in range(1, 5)]
+    answer = "".join(deltas).strip()
+    tts = FakeTTS(delay=0.02)
+    ws = FakeWS()
+    engines = _task_engines(FakeAgent(deltas, token_delay=0.05), tts)
+
+    async def go() -> None:
+        session = VoiceSession(ws, engines)
+        monkeypatch.setattr(pipeline, "_ACTIVE", {session})
+        done = threading.Event()
+
+        def run_task() -> None:
+            pipeline.Engines._run_task(engines, "scan the workspace", None, None, "spoken")
+            done.set()
+
+        start(session)
+        threading.Thread(target=run_task, daemon=True).start()
+        await wait_event(ws, "reply_done", timeout=30)
+        # poll, don't block the loop: pending frame sends must land on FakeWS
+        deadline = time.monotonic() + 30
+        while time.monotonic() < deadline and (
+            not done.is_set() or len(ws.texts("reply_done")) < 2
+        ):
+            await asyncio.sleep(0.01)
+        assert done.is_set(), "scheduled task did not finish"
+        frames = ws.frames()
+        audio_idx = [i for i, (k, _) in enumerate(frames) if k == "audio"]
+        task_msg = next(
+            i for i, (k, d) in enumerate(frames)
+            if k == "text" and d.get("type") == "agent_text" and d.get("delta") == answer
+        )
+        assert ws.audio_frames() == 8  # 4 reply + 4 task
+        assert len(ws.texts("reply_done")) == 2
+        assert task_msg > audio_idx[3], "task frames interleaved with the active reply"
+        assert task_msg < audio_idx[4], "task caption must precede its own audio"
+
+    asyncio.run(go())
+
+
+def test_barge_in_cancels_scheduled_task(monkeypatch):
+    """Barge-in during a task's speech stops it like any reply: the stale
+    sentences are dropped, no further audio leaks, and no reply_done is
+    sent (the task thread must not deadlock).
+
+    The TTS delay is long so s1 has been sent while s2 is mid-synthesis at
+    barge-in time: s2 finishes after the release and must be discarded, so
+    the final audio count is exactly 1 regardless of timing."""
+    tts = FakeTTS(delay=0.3)
+    ws = FakeWS()
+    engines = _task_engines(FakeAgent([f"S{i}. " for i in range(1, 9)]), tts)
+
+    async def go() -> None:
+        session = VoiceSession(ws, engines)
+        monkeypatch.setattr(pipeline, "_ACTIVE", {session})
+        done = threading.Event()
+
+        def run_task() -> None:
+            pipeline.Engines._run_task(engines, "scan the workspace", None, None, "spoken")
+            done.set()
+
+        threading.Thread(target=run_task, daemon=True).start()
+        await wait_audio(ws, 1)
+        before = ws.audio_frames()
+        session.release()
+        assert done.wait(timeout=30), "task thread hung after barge-in"
+        await asyncio.sleep(0.2)  # the stale generation must fully wind down
+        assert ws.audio_frames() == before, "stale task audio leaked after barge-in"
         assert len(ws.texts("reply_done")) == 0  # cancelled: no reply_done
 
     asyncio.run(go())

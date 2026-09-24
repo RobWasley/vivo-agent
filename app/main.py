@@ -25,6 +25,11 @@ class SessionRenamePayload(BaseModel):
     name: str
 
 
+class SessionCreatePayload(BaseModel):
+    name: str | None = None
+    activate: bool = True
+
+
 class SkillPayload(BaseModel):
     name: str
     description: str
@@ -34,6 +39,19 @@ class SkillPayload(BaseModel):
 class MemoryPayload(BaseModel):
     text: str
     core: bool = False
+
+
+class ReminderPayload(BaseModel):
+    text: str
+    type: str = "reminder"  # reminder | task
+    response: str = "spoken"  # spoken | text
+    kind: str | None = None  # legacy: spoken | silent | system
+    repeat: str = "once"  # once | interval | daily | weekly
+    at: str | None = None  # iso datetime, repeat=once
+    every: int | None = None  # minutes (1..1440), repeat=interval
+    time: str | None = None  # HH:MM, repeat=daily|weekly
+    days: list[int] | None = None  # 0=Monday..6=Sunday, repeat=weekly
+    session_id: str | None = None  # attach to a conversation
 
 
 class BenchSTTPayload(BaseModel):
@@ -178,6 +196,55 @@ async def delete_memory(fact_id: str, request: Request):
     return {"ok": True}
 
 
+def _reminder_store(request: Request):
+    return request.app.state.engines.reminders
+
+
+def _validate_reminder_session(body: ReminderPayload, request: Request) -> None:
+    if body.session_id and body.session_id not in request.app.state.engines.sessions.ids():
+        raise HTTPException(status_code=400, detail="unknown conversation")
+
+
+@app.get("/api/reminders")
+async def list_reminders(request: Request):
+    """All reminders/tasks: pending (soonest first), then fired history."""
+    return {"reminders": _reminder_store(request).list_all()}
+
+
+@app.post("/api/reminders")
+async def create_reminder(body: ReminderPayload, request: Request):
+    """Create a reminder (spoken/silent) or scheduled task (system)."""
+    _validate_reminder_session(body, request)
+    try:
+        item = _reminder_store(request).create(body.model_dump())
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"ok": True, "reminder": item}
+
+
+@app.put("/api/reminders/{reminder_id}")
+async def update_reminder(reminder_id: str, body: ReminderPayload, request: Request):
+    """Edit a reminder; re-derives the next due time and re-arms it."""
+    _validate_reminder_session(body, request)
+    store = _reminder_store(request)
+    try:
+        item = store.update(reminder_id, body.model_dump())
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="unknown reminder") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"ok": True, "reminder": item}
+
+
+@app.delete("/api/reminders/{reminder_id}")
+async def delete_reminder(reminder_id: str, request: Request):
+    try:
+        _reminder_store(request).delete(reminder_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="unknown reminder") from exc
+    return {"ok": True}
+
+
 def _skills() -> SkillStore:
     return SkillStore(Path(config.DATA_DIR) / "skills")
 
@@ -296,10 +363,14 @@ async def get_session_transcript(session_id: str, request: Request):
 
 
 @app.post("/api/sessions")
-async def create_session(request: Request):
-    """Create a new session and make it the active one."""
+async def create_session(request: Request, body: SessionCreatePayload | None = None):
+    """Create a new session. Optionally give it a display name and/or keep
+    the current session active (activate=false)."""
     store = request.app.state.engines.sessions
-    session_id = store.create()
+    activate = body.activate if body is not None else True
+    session_id = store.create(activate=activate)
+    if body is not None and (body.name or "").strip():
+        store.rename(session_id, body.name.strip())
     return {"active": store.active_id, "session_id": session_id}
 
 

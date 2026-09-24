@@ -92,12 +92,33 @@ const el = {
   btnMemoryDream: $("btn-memory-dream"),
   btnMemoryClose: $("btn-memory-close"),
   btnMemoryX: $("btn-memory-x"),
+  remindersDlg: $("reminders"),
+  reminderList: $("reminder-list-items"),
+  reminderMsg: $("reminder-msg"),
+  reminderText: $("reminder-text"),
+  reminderOnce: $("reminder-once"),
+  reminderTime: $("reminder-time"),
+  reminderSession: $("reminder-session"),
+  reminderKindHint: $("reminder-kind-hint"),
+  reminderLastResponse: $("reminder-last-response"),
+  reminderLastResponseWrap: $("reminder-last-response-wrap"),
+  reminderWhenOnce: $("reminder-when-once"),
+  reminderWhenTime: $("reminder-when-time"),
+  reminderWhenInterval: $("reminder-when-interval"),
+  reminderWhenDays: $("reminder-when-days"),
+  reminderEvery: $("reminder-every"),
+  reminderEveryUnit: $("reminder-every-unit"),
+  btnReminderNew: $("btn-reminder-new"),
+  btnReminderSave: $("btn-reminder-save"),
+  btnReminderDelete: $("btn-reminder-delete"),
+  btnReminderClose: $("btn-reminder-close"),
+  btnRemindersX: $("btn-reminders-x"),
+  btnReminders: $("btn-reminders"),
   hint: $("hint"),
   telUplink: $("tel-uplink"),
   telPipeline: $("tel-pipeline"),
   telMic: $("tel-mic"),
   telWake: $("tel-wake"),
-  telSession: $("tel-session"),
   outputVolume: $("output-volume"),
   telVolume: $("tel-volume"),
 };
@@ -601,10 +622,12 @@ function handleServerJson(m) {
     case "agent_text":
       appendAgent(m.delta, !!m.start, !!m.filler);
       break;
-    case "reminder":
+    case "reminder": {
       const reminderText = String(m.text || "Reminder");
-      addEntry("hint", `⏰ reminder: ${escapeHtml(reminderText)}`);
+      const kind = m.response === "text" ? "silent reminder" : "reminder";
+      addEntry("hint", `⏰ ${kind}: ${escapeHtml(reminderText)}`);
       return;
+    }
     case "tool":
       addToolEntry(m.name, m.result, m.status, m.duration_ms);
       break;
@@ -626,7 +649,6 @@ function handleServerJson(m) {
       // conversation this tab is bound to
       rememberSession(m.id);
       el.sessionSelect.disabled = false;
-      updateSessionTelemetry(m.id);
       loadSessions().then(() => {
         el.sessionSelect.value = m.id;
       });
@@ -782,17 +804,6 @@ function formatSessionId(id) {
   return m[6] ? `${label}${m[6]}` : label;
 }
 
-function updateSessionTelemetry(id) {
-  if (!id) {
-    el.telSession.textContent = "—";
-    return;
-  }
-  const meta = S.sessionsById[id];
-  const name = meta && (meta.name || "").trim();
-  el.telSession.textContent = name || formatSessionId(id);
-  el.telSession.title = el.telSession.textContent;
-}
-
 async function loadSessions() {
   let j;
   try {
@@ -817,7 +828,6 @@ async function loadSessions() {
   if (!known) S.sessionId = j.active; // remembered session vanished: follow the server
   if (S.sessionId) sel.value = S.sessionId;
   sel.disabled = false;
-  updateSessionTelemetry(S.sessionId);
 }
 
 async function renameSelectedSession() {
@@ -2344,6 +2354,363 @@ async function dreamMemory() {
   }
 }
 
+/* ---------------- reminders / scheduled tasks ----------------
+ * Mirrors the memory pane: list on the left, editor on the right. Types:
+ * reminder (vivo tells you something) or task (vivo carries it out with its
+ * tools and reports back); response: spoken (sound + text) or text only.
+ * Schedules: once (datetime), interval (every N minutes/hours), daily (time),
+ * weekly (time + weekdays). Optionally attached to a conversation, which
+ * tasks run in and reminders deliver to.
+ */
+
+const reminderUi = { selected: "", items: [], sessions: [] };
+let reminderMsgTimer = null;
+
+const REMINDER_SHAPE_HINTS = {
+  "reminder/spoken": "Reminder: told to you out loud (sound + text).",
+  "reminder/text": "Reminder: shown as text only, no sound.",
+  "task/spoken": "Task: vivo carries this out with its tools and tells you the result out loud (sound + text).",
+  "task/text": "Task: vivo carries this out with its tools; the result appears as text.",
+};
+
+const WEEKDAY_LABELS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+
+function flashReminderMsg(text, isError) {
+  el.reminderMsg.textContent = text;
+  el.reminderMsg.className = "settings-msg" + (isError ? " err" : " ok");
+  if (reminderMsgTimer) clearTimeout(reminderMsgTimer);
+  reminderMsgTimer = setTimeout(() => {
+    el.reminderMsg.textContent = "";
+    el.reminderMsg.className = "settings-msg";
+  }, 3000);
+}
+
+function reminderType() {
+  return document.querySelector('input[name="reminder-type"]:checked')?.value || "reminder";
+}
+
+function reminderResponse() {
+  return document.querySelector('input[name="reminder-response"]:checked')?.value || "spoken";
+}
+
+function updateReminderHint() {
+  const key = `${reminderType()}/${reminderResponse()}`;
+  el.reminderKindHint.textContent = REMINDER_SHAPE_HINTS[key] || "";
+}
+
+function reminderRepeat() {
+  return document.querySelector('input[name="reminder-repeat"]:checked')?.value || "once";
+}
+
+function reminderCheckedDays() {
+  return [...document.querySelectorAll(".reminder-days input:checked")]
+    .map((box) => Number(box.value));
+}
+
+function reminderWhenVisible() {
+  const repeat = reminderRepeat();
+  el.reminderWhenOnce.hidden = repeat !== "once";
+  el.reminderWhenTime.hidden = repeat === "once" || repeat === "interval";
+  el.reminderWhenInterval.hidden = repeat !== "interval";
+  el.reminderWhenDays.hidden = repeat !== "weekly";
+}
+
+function isoToLocalInput(iso) {
+  // "2026-09-23T08:00:00+00:00" -> "2026-09-23T09:00" (browser-local wall
+  // clock) for <input type=datetime-local>; a naive value is local already
+  const d = new Date(String(iso || "").replace(" ", "T"));
+  if (Number.isNaN(d.getTime())) return "";
+  const p = (n) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+
+function formatWhen(iso) {
+  const d = new Date(String(iso || "").replace(" ", "T"));
+  if (Number.isNaN(d.getTime())) return "—";
+  return d.toLocaleString([], { weekday: "short", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+}
+
+function formatEveryMinutes(minutes) {
+  const m = Number(minutes) || 0;
+  return m >= 60 && m % 60 === 0 ? `${m / 60} h` : `${m} min`;
+}
+
+function reminderScheduleMeta(item) {
+  const when = item.repeat === "once"
+    ? new Date(isoToLocalInput(item.at || item.due_at))
+    : null;
+  const due = when && !Number.isNaN(when.getTime())
+    ? when.toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })
+    : item.time || "";
+  const repeat = item.repeat === "once"
+    ? `once · ${due}`
+    : item.repeat === "interval"
+      ? `every ${formatEveryMinutes(item.every)}`
+      : item.repeat === "daily"
+        ? `daily · ${item.time}`
+        : `weekly · ${item.time} · ${item.days.map((d) => WEEKDAY_LABELS[d]).join(", ")}`;
+  return repeat;
+}
+
+function resetReminderEditor() {
+  reminderUi.selected = "";
+  el.reminderText.value = "";
+  document.getElementById("reminder-type-reminder").checked = true;
+  document.getElementById("reminder-response-spoken").checked = true;
+  document.getElementById("reminder-repeat-once").checked = true;
+  el.reminderOnce.value = "";
+  el.reminderTime.value = "";
+  el.reminderEvery.value = "30";
+  el.reminderEveryUnit.value = "minutes";
+  for (const box of document.querySelectorAll(".reminder-days input")) box.checked = false;
+  // Default to the current conversation so attaching is one tap away.
+  el.reminderSession.value = S.sessionId || "";
+  el.btnReminderDelete.disabled = true;
+  updateReminderHint();
+  el.reminderLastResponseWrap.hidden = true;
+  el.reminderLastResponse.value = "";
+  reminderWhenVisible();
+  renderReminderList();
+  el.reminderText.focus();
+}
+
+function renderReminderList() {
+  el.reminderList.innerHTML = "";
+  if (!reminderUi.items.length) {
+    const empty = document.createElement("p");
+    empty.className = "skills-empty";
+    empty.textContent = "Nothing scheduled.";
+    el.reminderList.appendChild(empty);
+    return;
+  }
+  for (const item of reminderUi.items) {
+    const meta = reminderUi.sessions.find((s) => s.id === item.session_id);
+    const itemEl = document.createElement("button");
+    itemEl.type = "button";
+    itemEl.className = "skill-list-item"
+      + (item.id === reminderUi.selected ? " active" : "")
+      + (item.status === "fired" ? " done" : "");
+    const text = document.createElement("strong");
+    text.textContent = item.text;
+    const sub = document.createElement("span");
+    sub.textContent = `${item.type} · ${item.response} · ${reminderScheduleMeta(item)}`
+      + (meta ? ` · ${meta.name.trim() || formatSessionId(meta.id)}` : "");
+    const when = document.createElement("span");
+    if (item.status === "pending") {
+      when.textContent = `next ${formatWhen(item.due_at)}`
+        + (item.last_fired_at ? ` · last fired ${formatWhen(item.last_fired_at)}` : "");
+    } else {
+      when.textContent = `last fired ${formatWhen(item.last_fired_at || item.fired_at)}`;
+    }
+    itemEl.append(text, sub, when);
+    if (item.last_response) {
+      const last = document.createElement("span");
+      last.className = "rem-last";
+      last.textContent = `“${item.last_response}”`;
+      last.title = item.last_response;
+      itemEl.append(last);
+    }
+    itemEl.addEventListener("click", () => loadReminder(item.id));
+    el.reminderList.appendChild(itemEl);
+  }
+}
+
+async function refreshReminders(selected = reminderUi.selected) {
+  const res = await fetch("/api/reminders");
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
+  reminderUi.items = data.reminders || [];
+  if (!reminderUi.items.some((item) => item.id === selected)) selected = "";
+  reminderUi.selected = selected;
+  renderReminderList();
+}
+
+function rebuildReminderSessions(selectedId) {
+  el.reminderSession.innerHTML = "";
+  const anyOpt = document.createElement("option");
+  anyOpt.value = "";
+  anyOpt.textContent = "— any (broadcast) —";
+  el.reminderSession.appendChild(anyOpt);
+  for (const s of reminderUi.sessions) {
+    const opt = document.createElement("option");
+    opt.value = s.id;
+    opt.textContent = (s.name || "").trim() || formatSessionId(s.id);
+    el.reminderSession.appendChild(opt);
+  }
+  const newOpt = document.createElement("option");
+  newOpt.value = "__new__";
+  newOpt.textContent = "+ New conversation…";
+  el.reminderSession.appendChild(newOpt);
+  const want = selectedId || S.sessionId || "";
+  el.reminderSession.value =
+    [...el.reminderSession.options].some((o) => o.value === want) ? want : "";
+}
+
+async function newReminderConversation() {
+  const name = prompt(
+    "Name for the new conversation (e.g. \"Morning briefings\"). Leave blank for an auto name."
+  );
+  if (name === null) {
+    rebuildReminderSessions(S.sessionId || "");
+    return;
+  }
+  el.reminderSession.disabled = true;
+  try {
+    const res = await fetch("/api/sessions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: (name || "").trim() || null, activate: false }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
+    const listRes = await fetch("/api/sessions");
+    const listData = await listRes.json().catch(() => ({}));
+    if (listRes.ok && Array.isArray(listData.sessions)) {
+      reminderUi.sessions = listData.sessions;
+    }
+    rebuildReminderSessions(data.session_id || "");
+    flashReminderMsg("conversation created");
+  } catch (err) {
+    rebuildReminderSessions(S.sessionId || "");
+    flashReminderMsg(`could not create conversation: ${err.message}`, true);
+  } finally {
+    el.reminderSession.disabled = false;
+  }
+}
+
+async function openReminders() {
+  el.remindersDlg.showModal();
+  resetReminderEditor();
+  try {
+    const res = await fetch("/api/sessions");
+    const data = await res.json().catch(() => ({}));
+    if (res.ok && Array.isArray(data.sessions)) {
+      reminderUi.sessions = data.sessions;
+      rebuildReminderSessions(S.sessionId || "");
+    }
+    await refreshReminders();
+  } catch (err) {
+    flashReminderMsg(`could not load reminders: ${err.message}`, true);
+  }
+}
+
+function loadReminder(id) {
+  const item = reminderUi.items.find((row) => row.id === id);
+  if (!item) return;
+  reminderUi.selected = id;
+  el.reminderText.value = item.text;
+  const typeRadio = document.getElementById(`reminder-type-${item.type}`);
+  if (typeRadio) typeRadio.checked = true;
+  const responseRadio = document.getElementById(`reminder-response-${item.response}`);
+  if (responseRadio) responseRadio.checked = true;
+  const repeatRadio = document.getElementById(`reminder-repeat-${item.repeat}`);
+  if (repeatRadio) repeatRadio.checked = true;
+  el.reminderOnce.value = item.repeat === "once" ? isoToLocalInput(item.at || item.due_at) : "";
+  el.reminderTime.value = item.repeat !== "once" ? item.time || "" : "";
+  if (item.repeat === "interval" && item.every) {
+    const every = Number(item.every);
+    el.reminderEvery.value = every % 60 === 0 ? String(every / 60) : String(every);
+    el.reminderEveryUnit.value = every % 60 === 0 ? "hours" : "minutes";
+  }
+  for (const box of document.querySelectorAll(".reminder-days input")) {
+    box.checked = (item.days || []).includes(Number(box.value));
+  }
+  el.reminderSession.value = item.session_id || "";
+  updateReminderHint();
+  const last = item.last_response || "";
+  el.reminderLastResponseWrap.hidden = !last;
+  el.reminderLastResponse.value = last;
+  el.btnReminderDelete.disabled = false;
+  reminderWhenVisible();
+  renderReminderList();
+}
+
+function buildReminderBody() {
+  const text = el.reminderText.value.trim();
+  if (!text) return { error: "text required" };
+  const repeat = reminderRepeat();
+  const body = {
+    text,
+    type: reminderType(),
+    response: reminderResponse(),
+    repeat,
+    at: null,
+    time: null,
+    days: [],
+    every: null,
+    session_id: el.reminderSession.value || null,
+  };
+  if (repeat === "once") {
+    if (!el.reminderOnce.value) return { error: "pick a date and time" };
+    const value = el.reminderOnce.value; // "YYYY-MM-DDTHH:MM"
+    body.at = value.length === 16 ? `${value}:00` : value;
+  } else if (repeat === "interval") {
+    const raw = Number(el.reminderEvery.value);
+    if (!Number.isFinite(raw) || raw < 1) return { error: "enter an interval of at least 1" };
+    const minutes = Math.round(raw * (el.reminderEveryUnit.value === "hours" ? 60 : 1));
+    if (minutes < 1 || minutes > 1440) return { error: "interval must be between 1 minute and 24 hours" };
+    body.every = minutes;
+  } else {
+    if (!el.reminderTime.value) return { error: "pick a time" };
+    body.time = el.reminderTime.value;
+    if (repeat === "weekly") {
+      const days = reminderCheckedDays();
+      if (!days.length) return { error: "pick at least one weekday" };
+      body.days = days;
+    }
+  }
+  return { body };
+}
+
+async function saveReminder() {
+  const { body, error } = (() => {
+    const built = buildReminderBody();
+    return built.body ? built : { error: built.error };
+  })();
+  if (error) {
+    if (error === "text required") return el.reminderText.reportValidity();
+    return flashReminderMsg(error, true);
+  }
+  const isNew = !reminderUi.selected;
+  const endpoint = isNew
+    ? "/api/reminders"
+    : `/api/reminders/${encodeURIComponent(reminderUi.selected)}`;
+  el.btnReminderSave.disabled = true;
+  try {
+    const res = await fetch(endpoint, {
+      method: isNew ? "POST" : "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
+    await refreshReminders(data.reminder.id);
+    loadReminder(data.reminder.id);
+    flashReminderMsg(isNew ? "reminder saved" : "reminder updated");
+  } catch (err) {
+    flashReminderMsg(`save failed: ${err.message}`, true);
+  } finally {
+    el.btnReminderSave.disabled = false;
+  }
+}
+
+async function deleteReminder() {
+  const id = reminderUi.selected;
+  if (!id || !confirm("delete this reminder or task?")) return;
+  el.btnReminderDelete.disabled = true;
+  try {
+    const res = await fetch(`/api/reminders/${encodeURIComponent(id)}`, { method: "DELETE" });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
+    await refreshReminders();
+    resetReminderEditor();
+    flashReminderMsg("reminder deleted");
+  } catch (err) {
+    flashReminderMsg(`delete failed: ${err.message}`, true);
+    el.btnReminderDelete.disabled = false;
+  }
+}
+
 /* ---------------- wiring ---------------- */
 
 el.btnStart.addEventListener("click", async () => {
@@ -2441,6 +2808,29 @@ el.btnMemoryClose.addEventListener("click", closeMemory);
 el.btnMemoryX.addEventListener("click", closeMemory);
 el.memoryDlg.addEventListener("click", (ev) => {
   if (ev.target === el.memoryDlg) closeMemory();
+});
+
+el.btnReminders.addEventListener("click", openReminders);
+el.btnReminderNew.addEventListener("click", resetReminderEditor);
+el.btnReminderSave.addEventListener("click", saveReminder);
+el.btnReminderDelete.addEventListener("click", deleteReminder);
+const closeReminders = () => el.remindersDlg.close();
+el.btnReminderClose.addEventListener("click", closeReminders);
+el.btnRemindersX.addEventListener("click", closeReminders);
+el.remindersDlg.addEventListener("click", (ev) => {
+  if (ev.target === el.remindersDlg) closeReminders();
+});
+for (const shapeRadio of document.querySelectorAll('input[name="reminder-type"], input[name="reminder-response"]')) {
+  shapeRadio.addEventListener("change", updateReminderHint);
+}
+for (const repeatRadio of document.querySelectorAll('input[name="reminder-repeat"]')) {
+  repeatRadio.addEventListener("change", reminderWhenVisible);
+}
+el.reminderSession.addEventListener("change", () => {
+  if (el.reminderSession.value === "__new__") newReminderConversation();
+});
+el.reminderText.addEventListener("keydown", (ev) => {
+  if (ev.key === "Enter" && (ev.metaKey || ev.ctrlKey)) saveReminder();
 });
 
 el.btnBrowser.addEventListener("click", () =>

@@ -19,7 +19,7 @@ from app.memory import MemoryStore
 from app import shell as shell_tool
 from app.skills import SkillStore
 from app import web as web_tool
-from app.reminders import ReminderStore, get_default_store, schedule_reminder
+from app.reminders import get_default_store, user_tz
 
 MAX_RESULT_CHARS = 16000
 IGNORED_DIRS = {
@@ -622,15 +622,33 @@ TOOLS: List[dict] = [
         "function": {
             "name": "set_reminder",
             "description": (
-                "Schedule a spoken reminder for later. Use either in_minutes or at, "
-                "but not both. 'at' may be an ISO datetime or a clock time like '7:30 pm'."
+                "Create a reminder or scheduled task. type: 'reminder' (vivo tells "
+                "the user something at the set time) or 'task' (you carry it out "
+                "with your tools and return the result, e.g. a daily news "
+                "briefing). response: 'spoken' (said aloud and shown as text) or "
+                "'text' (shown as text only). repeat: 'once' (needs at or "
+                "in_minutes), 'interval' (needs every_minutes; fires repeatedly "
+                "every N minutes, multiple times a day), 'daily' (needs time), "
+                "'weekly' (needs time and days). Times are in the user's own time "
+                "zone; use get_time first to resolve words like 'tomorrow' or "
+                "'tonight' to a concrete ISO datetime in that zone. session_id "
+                "optionally attaches the item to a conversation (see "
+                "list_conversations). Only call this once every schedule detail "
+                "is known; if anything is missing, ask the user first."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "text": {"type": "string", "description": "What to remember."},
-                    "in_minutes": {"type": "number", "description": "Delay in minutes."},
-                    "at": {"type": "string", "description": "When to remind, e.g. '2026-09-18T19:00:00' or '7:30 pm'."},
+                    "text": {"type": "string", "description": "What to remind about, or the task to carry out."},
+                    "type": {"type": "string", "enum": ["reminder", "task"], "description": "'reminder' to tell the user something, 'task' to carry it out with your tools and report back."},
+                    "response": {"type": "string", "enum": ["spoken", "text"], "description": "'spoken' says the result aloud (and shows it), 'text' shows it as text only."},
+                    "repeat": {"type": "string", "enum": ["once", "interval", "daily", "weekly"]},
+                    "at": {"type": "string", "description": "ISO datetime for a one-time item, in the user's time zone (see get_time), e.g. '2026-09-24T10:00:00'."},
+                    "in_minutes": {"type": "number", "description": "Delay in minutes for a one-time item."},
+                    "every_minutes": {"type": "integer", "description": "Repeat span in minutes for an 'interval' item, 1-1440, e.g. 30 for every half hour or 120 for every 2 hours."},
+                    "time": {"type": "string", "description": "Clock time 'HH:MM' for daily or weekly items, e.g. '09:00'."},
+                    "days": {"type": "array", "items": {"type": "integer"}, "description": "Weekdays for a weekly item: 0=Monday..6=Sunday."},
+                    "session_id": {"type": "string", "description": "Optional conversation ID to attach the item to."},
                 },
                 "required": ["text"],
             },
@@ -640,17 +658,61 @@ TOOLS: List[dict] = [
         "type": "function",
         "function": {
             "name": "list_reminders",
-            "description": "List upcoming pending reminders, ordered by soonest due time.",
+            "description": (
+                "List the user's reminders and scheduled tasks with their IDs, types, "
+                "schedules, next fire times (in the user's time zone), and (for tasks) "
+                "the last response. Use it to answer what is scheduled and to find IDs "
+                "for delete_reminder."
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "limit": {"type": "integer", "description": "Maximum number of upcoming reminders to return."},
+                    "limit": {"type": "integer", "description": "Maximum number of items to return."},
                 },
                 "required": [],
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "delete_reminder",
+            "description": (
+                "Delete a reminder or scheduled task by its ID. Use list_reminders "
+                "first to find IDs. Only use when the user asks to cancel or remove one."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "id": {"type": "string", "description": "The reminder ID from list_reminders."},
+                },
+                "required": ["id"],
+            },
+        },
+    },
 ]
+
+
+def _format_every(minutes) -> str:
+    try:
+        minutes = int(minutes)
+    except (TypeError, ValueError):
+        return "?"
+    if minutes >= 60 and minutes % 60 == 0:
+        return f"{minutes // 60} h"
+    return f"{minutes} min"
+
+
+def _local_when(value) -> str:
+    """An iso datetime (stored as UTC) as the user's wall clock, so the LLM —
+    which thinks in the user's time zone — sees the time they asked for."""
+    try:
+        dt = datetime.datetime.fromisoformat(str(value))
+    except (TypeError, ValueError):
+        return str(value)
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=datetime.timezone.utc)
+    return dt.astimezone(user_tz()).strftime("%Y-%m-%d %H:%M")
 
 
 def execute(name: str, args: dict) -> str:
@@ -693,29 +755,88 @@ def execute(name: str, args: dict) -> str:
         elif tool_name == "web_fetch":
             func = lambda url="", max_chars=None: web_tool.web_fetch(str(url), max_chars=max_chars)
         elif tool_name == "set_reminder":
-            def func(text="", in_minutes=None, at=None):
-                if text == "":
+            def func(text="", type=None, response=None, repeat=None, at=None, in_minutes=None, every_minutes=None, time=None, days=None, session_id=None):
+                if not str(text or "").strip():
                     return "error: reminder text is required"
-                if in_minutes is not None and at is not None:
-                    return "error: use either in_minutes or at, not both"
-                if in_minutes is not None:
-                    item = schedule_reminder(str(text), minutes=float(in_minutes))
-                elif at is not None:
-                    item = schedule_reminder(str(text), at=str(at))
+                item_type = str(type or "reminder")
+                item_response = str(response or "spoken")
+                repeat = str(repeat or "once")
+                spec = {"text": str(text), "type": item_type, "response": item_response, "repeat": repeat, "session_id": session_id or None}
+                if repeat == "once":
+                    if in_minutes is not None and at is not None:
+                        return "error: use either in_minutes or at, not both"
+                    if in_minutes is not None:
+                        due = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(minutes=float(in_minutes))
+                        spec["at"] = due.isoformat(timespec="seconds")
+                    elif at is not None:
+                        spec["at"] = str(at)
+                    else:
+                        return (
+                            "error: a one-time reminder needs 'at' (an ISO datetime) "
+                            "or 'in_minutes' — ask the user when they want it"
+                        )
+                elif repeat == "interval":
+                    if every_minutes is None:
+                        return (
+                            "error: an interval item needs 'every_minutes' "
+                            "(1-1440) — ask the user how often it should repeat"
+                        )
+                    spec["every"] = int(every_minutes)
                 else:
-                    return "error: supply in_minutes or at for the reminder"
-                return f"reminder scheduled for {item['due_at']}"
+                    if not time:
+                        return (
+                            "error: a daily or weekly item needs a 'time' like '09:00' "
+                            "— ask the user what time they want it"
+                        )
+                    spec["time"] = str(time)
+                    if repeat == "weekly" and not days:
+                        return (
+                            "error: a weekly item needs 'days' (0=Monday..6=Sunday) "
+                            "— ask the user which days"
+                        )
+                    if repeat == "weekly":
+                        spec["days"] = [int(d) for d in days]
+                try:
+                    item = get_default_store().create(spec)
+                except ValueError as exc:
+                    return f"error: {exc}"
+                return f"reminder created: {item['text']} ({item['type']}, {item['response']}, {repeat}) — next fire {_local_when(item['due_at'])}"
         elif tool_name == "list_reminders":
             def func(limit=10):
                 limit = int(limit or 10)
-                store = get_default_store()
-                items = store.upcoming(limit=limit)
+                items = get_default_store().list_all()[:limit]
                 if not items:
-                    return "No upcoming reminders."
+                    return "No reminders or tasks."
                 lines = []
                 for item in items:
-                    lines.append(f"- {item['text']} (due {item['due_at']})")
+                    if item["repeat"] == "once":
+                        schedule = f"once {_local_when(item['at'] or item['due_at'])}"
+                    elif item["repeat"] == "interval":
+                        schedule = f"every {_format_every(item.get('every'))}"
+                    elif item["repeat"] == "weekly":
+                        schedule = f"weekly {item['time']} on days {','.join(str(d) for d in item['days'])}"
+                    else:
+                        schedule = f"daily {item['time']}"
+                    when = (
+                        f"next fire {_local_when(item['due_at'])}" if item["status"] == "pending"
+                        else f"fired {_local_when(item['fired_at']) if item['fired_at'] else 'earlier'}"
+                    )
+                    line = f"- {item['id']}: {item['text']} ({item['type']}/{item['response']}, {schedule}, {when})"
+                    if item.get("last_fired_at"):
+                        line += f" [last fired {_local_when(item['last_fired_at'])}]"
+                    if item.get("last_response"):
+                        line += f" | last response: {str(item['last_response'])[:200]}"
+                    lines.append(line)
                 return "\n".join(lines)
+        elif tool_name == "delete_reminder":
+            def func(id=""):
+                store = get_default_store()
+                try:
+                    item = store.get(str(id))
+                except KeyError:
+                    return "error: no reminder with that ID — use list_reminders to see the current ones"
+                store.delete(str(id))
+                return f"deleted: {item['text']}"
         else:
             continue
         registry.register(

@@ -95,35 +95,6 @@
     <div class="nav-divider" aria-hidden="true"></div>
 
     <div class="nav-group">
-      <button class="nav-btn" id="btn-new-session" title="Start a new conversation">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-          <path d="M12 5v14M5 12h14"/>
-        </svg>
-        <span class="nav-label">New</span>
-      </button>
-      <button class="nav-btn" id="btn-rename-session" title="Rename selected conversation">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-          <path d="M4 20l4.5-1L20 7.5 16.5 4 5 15.5 4 20z"/>
-        </svg>
-        <span class="nav-label">Rename</span>
-      </button>
-      <button class="nav-btn danger" id="btn-delete-session" title="Delete selected conversation">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-          <path d="M5 7h14"/>
-          <path d="M9.5 7V4.5h5V7"/>
-          <path d="M7 7l1 13.5h8L17 7"/>
-        </svg>
-        <span class="nav-label">Delete</span>
-      </button>
-      <label class="nav-select" for="session-select">
-        <span class="nav-select-label">Conversation</span>
-        <select id="session-select" title="Conversation" disabled></select>
-      </label>
-    </div>
-
-    <div class="nav-divider" aria-hidden="true"></div>
-
-    <div class="nav-group">
       <button class="nav-btn" id="btn-settings" title="Settings">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
           <path d="M4 7h9.5M18.5 7H20M4 12h3.5M12.5 12H20M4 17h9.5M18.5 17H20"/>
@@ -147,6 +118,14 @@
           <path d="M8.5 8h7M8.5 12h7M8.5 16h4"/>
         </svg>
         <span class="nav-label">Memory</span>
+      </button>
+      <button class="nav-btn" id="btn-reminders" title="Manage reminders and scheduled tasks">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M6.5 8.5a5.5 5.5 0 0 1 11 0c0 3.6 1.4 5 2 6H4.5c.6-1 2-2.4 2-6z"/>
+          <path d="M10 17.5a2 2 0 0 0 4 0"/>
+          <path d="M12 3.5v-1M19.5 6l.8-.8M4.5 6l-.8-.8"/>
+        </svg>
+        <span class="nav-label">Reminders</span>
       </button>
     </div>
   </nav>
@@ -218,8 +197,13 @@
       <span class="tel-val" id="tel-wake">standby</span>
     </div>
     <div class="tel tel-session">
-      <span class="tel-key">Session</span>
-      <span class="tel-val" id="tel-session">&mdash;</span>
+      <span class="tel-key">Conversation</span>
+      <div class="session-controls">
+        <select id="session-select" title="Conversation" disabled></select>
+        <button class="ghost tiny" id="btn-new-session" title="Start a new conversation">new</button>
+        <button class="ghost tiny" id="btn-rename-session" title="Rename selected conversation">rename</button>
+        <button class="ghost tiny danger-action" id="btn-delete-session" title="Delete selected conversation">delete</button>
+      </div>
     </div>
     <label class="tel tel-volume" for="output-volume">
       <span class="tel-key">Output volume</span>
@@ -313,6 +297,115 @@
       <button class="ghost" id="btn-memory-close">Close</button>
       <button class="ghost danger-action" id="btn-memory-delete" disabled>Delete</button>
       <button class="primary" id="btn-memory-save">Save</button>
+    </div>
+  </dialog>
+
+  <dialog id="reminders" class="skills-dialog">
+    <div class="settings-head">
+      <h2>Reminders &amp; Tasks</h2>
+      <button class="ghost" id="btn-reminders-x" title="Close">&times;</button>
+    </div>
+    <div class="skills-body">
+      <aside class="skills-list" aria-label="Reminders and scheduled tasks">
+        <div class="skills-list-head">
+          <span>Scheduled</span>
+          <button class="ghost tiny" id="btn-reminder-new" title="Add a reminder or task">New</button>
+        </div>
+        <div id="reminder-list-items" class="skills-list-items"></div>
+      </aside>
+      <div class="skills-editor">
+        <label class="skills-instructions">
+          <span>Text</span>
+          <textarea id="reminder-text" required placeholder="What to remind you of &mdash; or the task for vivo to carry out"></textarea>
+        </label>
+        <fieldset class="reminder-fieldset">
+          <legend>Type</legend>
+          <label>
+            <input type="radio" name="reminder-type" id="reminder-type-reminder" value="reminder" checked>
+            <span>Reminder</span>
+          </label>
+          <label>
+            <input type="radio" name="reminder-type" id="reminder-type-task" value="task">
+            <span>Task</span>
+          </label>
+        </fieldset>
+        <fieldset class="reminder-fieldset">
+          <legend>Response</legend>
+          <label>
+            <input type="radio" name="reminder-response" id="reminder-response-spoken" value="spoken" checked>
+            <span>Spoken</span>
+          </label>
+          <label>
+            <input type="radio" name="reminder-response" id="reminder-response-text" value="text">
+            <span>Text</span>
+          </label>
+        </fieldset>
+        <p class="reminder-hint" id="reminder-kind-hint">A reminder is told to you out loud (sound + text).</p>
+        <fieldset class="reminder-fieldset">
+          <legend>Repeat</legend>
+          <label>
+            <input type="radio" name="reminder-repeat" id="reminder-repeat-once" value="once" checked>
+            <span>Once</span>
+          </label>
+          <label>
+            <input type="radio" name="reminder-repeat" id="reminder-repeat-interval" value="interval">
+            <span>Every</span>
+          </label>
+          <label>
+            <input type="radio" name="reminder-repeat" id="reminder-repeat-daily" value="daily">
+            <span>Daily</span>
+          </label>
+          <label>
+            <input type="radio" name="reminder-repeat" id="reminder-repeat-weekly" value="weekly">
+            <span>Weekly</span>
+          </label>
+        </fieldset>
+        <label id="reminder-when-once">
+          <span>Date &amp; time</span>
+          <input type="datetime-local" id="reminder-once">
+        </label>
+        <label id="reminder-when-time">
+          <span>Time</span>
+          <input type="time" id="reminder-time" step="60">
+        </label>
+        <div id="reminder-when-interval">
+          <span class="reminder-when-label">Every</span>
+          <div class="reminder-interval">
+            <input type="number" id="reminder-every" min="1" max="1440" step="1" value="30">
+            <select id="reminder-every-unit">
+              <option value="minutes" selected>minutes</option>
+              <option value="hours">hours</option>
+            </select>
+          </div>
+        </div>
+        <div id="reminder-when-days">
+          <span class="reminder-when-label">Weekdays</span>
+          <div class="reminder-days">
+            <label><input type="checkbox" value="0"><span>Mon</span></label>
+            <label><input type="checkbox" value="1"><span>Tue</span></label>
+            <label><input type="checkbox" value="2"><span>Wed</span></label>
+            <label><input type="checkbox" value="3"><span>Thu</span></label>
+            <label><input type="checkbox" value="4"><span>Fri</span></label>
+            <label><input type="checkbox" value="5"><span>Sat</span></label>
+            <label><input type="checkbox" value="6"><span>Sun</span></label>
+          </div>
+        </div>
+        <label>
+          <span>Conversation</span>
+          <select id="reminder-session"></select>
+        </label>
+        <label class="skills-instructions" id="reminder-last-response-wrap" hidden>
+          <span>Last response</span>
+          <textarea id="reminder-last-response" readonly rows="4" placeholder="The task has not produced a result yet."></textarea>
+        </label>
+      </div>
+    </div>
+    <div class="settings-foot">
+      <span class="settings-msg" id="reminder-msg"></span>
+      <span class="settings-spacer"></span>
+      <button class="ghost" id="btn-reminder-close">Close</button>
+      <button class="ghost danger-action" id="btn-reminder-delete" disabled>Delete</button>
+      <button class="primary" id="btn-reminder-save">Save</button>
     </div>
   </dialog>
 

@@ -415,44 +415,6 @@ body.transcript-open .caption {
   display: none;
 }
 
-.nav-select {
-  display: none;
-  flex-direction: column;
-  gap: 4px;
-  margin-top: 6px;
-}
-
-.nav-select-label {
-  font-family: var(--font-mono);
-  font-size: 0.56rem;
-  font-weight: 500;
-  letter-spacing: 0.18em;
-  text-transform: uppercase;
-  color: var(--faint);
-}
-
-.nav-select select {
-  width: 100%;
-  font-family: var(--font-mono);
-  font-size: 0.68rem;
-  letter-spacing: 0.04em;
-  color: var(--text);
-  background: rgba(13, 22, 38, 0.6);
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  padding: 7px 9px;
-  text-transform: none;
-}
-
-.nav-select select:disabled {
-  opacity: 0.45;
-}
-
-.nav-select select option {
-  background: var(--bg-1);
-  color: var(--text);
-}
-
 .sidenav.expanded {
   width: 188px;
 }
@@ -478,10 +440,6 @@ body.transcript-open .caption {
   font-weight: 500;
   letter-spacing: 0.12em;
   text-transform: uppercase;
-}
-
-.sidenav.expanded .nav-select {
-  display: flex;
 }
 
 /* ---------------- transcript drawer ---------------- */
@@ -1192,8 +1150,46 @@ body.transcript-open .telemetry {
 }
 
 .tel-session {
-  flex: 1.4;
+  flex: 1.7;
   min-width: 0;
+}
+
+.session-controls {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-width: 0;
+}
+
+.session-controls select {
+  flex: 1;
+  min-width: 70px;
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  letter-spacing: 0.04em;
+  color: var(--text);
+  background: rgba(13, 22, 38, 0.6);
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  padding: 5px 8px;
+  text-transform: none;
+}
+
+.session-controls select:disabled {
+  opacity: 0.45;
+}
+
+.session-controls select option {
+  background: var(--bg-1);
+  color: var(--text);
+}
+
+.session-controls button {
+  flex: none;
+  padding: 4px 10px;
+  font-size: 0.62rem;
+  white-space: nowrap;
 }
 
 .tel-volume {
@@ -1605,6 +1601,137 @@ button.danger-action:hover {
 .memory-core-toggle input {
   width: auto;
   accent-color: var(--accent);
+}
+
+[hidden] {
+  display: none !important;
+}
+
+/* ---------------- reminders dialog ---------------- */
+
+/* The shared .skills-editor grid reserves its 1fr row for the third child;
+   here the Text field is the first child, so give it the flexible row. */
+#reminders .skills-editor {
+  grid-template-rows: minmax(180px, 1fr) auto auto;
+}
+
+.skills-editor select {
+  width: 100%;
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: rgba(13, 22, 38, 0.6);
+  color: var(--text);
+  font: 0.8rem/1.45 var(--font-ui);
+  padding: 9px 10px;
+}
+
+.skills-editor input[type="radio"],
+.skills-editor input[type="checkbox"] {
+  width: auto;
+  accent-color: var(--accent);
+}
+
+.reminder-fieldset {
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: rgba(13, 22, 38, 0.35);
+  padding: 10px 12px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 18px;
+  align-items: center;
+}
+
+.reminder-fieldset legend {
+  font-family: var(--font-mono);
+  font-size: 0.61rem;
+  font-weight: 500;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--muted);
+  padding: 0 6px;
+}
+
+.reminder-fieldset label {
+  display: flex !important;
+  align-items: center;
+  gap: 7px;
+  font-size: 0.78rem;
+  color: var(--text);
+}
+
+.reminder-hint {
+  margin: 0;
+  font-size: 0.72rem;
+  color: var(--faint);
+}
+
+.reminder-when-label {
+  font-family: var(--font-mono);
+  font-size: 0.61rem;
+  font-weight: 500;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+#reminder-when-days,
+#reminder-when-interval {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+
+.reminder-interval {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.reminder-interval input {
+  width: 130px;
+}
+
+.reminder-interval select {
+  width: auto;
+}
+
+.reminder-days {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 14px;
+}
+
+.reminder-days label {
+  display: flex !important;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.76rem;
+  color: var(--text);
+}
+
+.skill-list-item.done {
+  opacity: 0.55;
+}
+
+.skill-list-item.done strong {
+  text-decoration: line-through;
+}
+
+.skill-list-item .rem-last {
+  -webkit-line-clamp: 1;
+  font-style: italic;
+  color: var(--faint);
+}
+
+#reminder-last-response {
+  min-height: 96px;
+}
+
+#reminder-last-response[readonly] {
+  background: rgba(13, 22, 38, 0.35);
+  color: var(--muted);
 }
 
 .ssection {

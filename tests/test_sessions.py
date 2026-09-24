@@ -580,3 +580,33 @@ def test_sessions_api():
     assert client.post("/api/sessions/nope/rename", json={"name": "x"}).status_code == 404
     assert client.delete("/api/sessions/nope").status_code == 404
     assert client.get("/api/sessions/nope/transcript").status_code == 404
+
+
+def test_sessions_api_create_named_without_activating():
+    client = TestClient(_offline_app())
+    active = client.get("/api/sessions").json()["active"]
+
+    # no body: legacy behaviour (created + activated)
+    r = client.post("/api/sessions")
+    assert r.status_code == 200
+    assert r.json()["active"] == r.json()["session_id"]
+    active = r.json()["session_id"]
+
+    # named, not activated: the voice session keeps its current active one
+    r = client.post("/api/sessions", json={"name": "Morning briefings", "activate": False})
+    assert r.status_code == 200
+    new_id = r.json()["session_id"]
+    assert new_id != active
+    assert r.json()["active"] == active
+    j = client.get("/api/sessions").json()
+    row = [s for s in j["sessions"] if s["id"] == new_id][0]
+    assert row["name"] == "Morning briefings"
+    assert row["active"] is False
+
+    # explicit activate: true still switches
+    r = client.post("/api/sessions", json={"name": "  ", "activate": True})
+    assert r.status_code == 200
+    assert r.json()["active"] == r.json()["session_id"]
+    j = client.get("/api/sessions").json()
+    row = [s for s in j["sessions"] if s["id"] == r.json()["session_id"]][0]
+    assert row["name"] == ""  # blank name stays auto-labelled

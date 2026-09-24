@@ -95,6 +95,8 @@ def make_engines(agent: ThinkingAgent, tts: FakeTTS):
             stt=SimpleNamespace(transcribe=lambda samples: "hello there"),
             tts=tts,
             agent=agent,
+            memory=SimpleNamespace(core_summary=lambda: "No important memory yet."),
+            skills=SimpleNamespace(index=lambda: ""),
             sessions=sessions,
             wake=WakeState(),  # disabled (no phrase): legacy always-answer behavior
         ),
@@ -312,6 +314,8 @@ def test_wake_ack_and_reply_are_separate_messages(monkeypatch):
         stt=SimpleNamespace(transcribe=lambda samples: "hey vivo what time is it"),
         tts=tts,
         agent=agent,
+        memory=SimpleNamespace(core_summary=lambda: "No important memory yet."),
+        skills=SimpleNamespace(index=lambda: ""),
         sessions=sessions,
         wake=WakeState("hey vivo", ("goodbye",), 30.0),
     )

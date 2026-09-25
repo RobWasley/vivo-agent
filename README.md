@@ -193,7 +193,7 @@ A background scheduler in the container fires items whether or not a console is 
 
 ## Live Browser View
 
-The container ships with **agent-browser** (a headless Chrome driver). When vivo needs the web it drives it from the `exec` tool — open a page, snapshot the interactive elements, act by reference — and calls `browser_view` so you can watch.
+The container ships with **agent-browser** (a headless Chrome driver). When vivo needs the web it calls `browser_view` to open the live viewport, then drives the browser from the `exec` tool — open a page, set the viewport, snapshot the interactive elements, act by reference, and re-snapshot after changes — following the workflow carried in the tool's description.
 
 The viewport streams to a panel in the UI over a dedicated WebSocket (`/ws/browser`) as compressed frames, capped by the `[browser]` settings. Your mouse and keyboard on the panel go straight back to the page, so you can take over mid-task. Closing the panel — or the browsing task — shuts the browser down.
 

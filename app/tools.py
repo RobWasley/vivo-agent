@@ -538,10 +538,9 @@ TOOLS: List[dict] = [
             "name": "exec",
             "description": (
                 "Run a shell command in the workspace (bash). Use for builds, "
-                "git, scripts, and browser automation with agent-browser. "
-                "For browser work, open a page, snapshot interactive refs, "
-                "act by ref, and re-snapshot after changes. The user can watch "
-                "the browser panel. Keep commands short; output is truncated."
+                "git, scripts, and browser automation via agent-browser. For "
+                "any browser work call the browser_view tool first and follow "
+                "its workflow. Keep commands short; output is truncated."
             ),
             "parameters": {
                 "type": "object",
@@ -565,10 +564,22 @@ TOOLS: List[dict] = [
         "function": {
             "name": "browser_view",
             "description": (
-                "Open or close the live browser viewport in the user's UI. "
-                "Call with action 'open' before starting agent-browser work so "
-                "the user can watch, and action 'close' when the user asks to "
-                "close the browser or the browsing task is finished (this also "
+                "Open or close the live browser viewport in the user's UI, and "
+                "the entry point for all browser work. Call action 'open' "
+                "before the first agent-browser command of a task so the user "
+                "can watch. The workflow (run via exec): agent-browser open "
+                "<url>, then set the viewport (agent-browser set viewport "
+                "1920 1080), inspect with 'snapshot -i', act on the returned "
+                "refs (click @e2, fill @e3 \"text\"), and re-snapshot after any "
+                "navigation or page change because refs can change; use "
+                "'batch' for several independent commands and "
+                "'screenshot --if-changed' for a visual check. Never answer "
+                "what a page shows from memory or assumptions: take a fresh "
+                "snapshot first and answer only from it, navigate to the page "
+                "that shows a missing fact, and say so if it cannot be found. "
+                "Never claim an action succeeded without checking the "
+                "resulting page. Call action 'close' when the user asks or "
+                "the task is finished with no more interaction planned (this "
                 "shuts the browser down and returns the UI to the voice view)."
             ),
             "parameters": {

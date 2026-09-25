@@ -642,14 +642,18 @@ def test_dream_scheduler_reports_state_and_manual_trigger(tmp_path):
 
     store = MemoryStore(path=str(tmp_path / "memory.md"))
     states = []
-    scheduler = DreamScheduler(store, interval_seconds=999, on_state=lambda active: states.append(active))
+    scheduler = DreamScheduler(
+        store, interval_seconds=999,
+        on_state=lambda active, phase="": states.append((active, phase)),
+    )
 
     store.observe("User prefers short answers")
     store.observe("The project is called vivo-agent")
-    summary = scheduler.trigger()
+    record = scheduler.trigger()
 
-    assert summary and "short answers" in summary.lower()
-    assert states == [True, False]
+    assert record["summary"] and "short answers" in record["summary"].lower()
+    assert [active for active, _ in states] == [True, False]
+    assert states[0][1] == "consolidating"
 
 
 # -- last_response (what a task last produced) --------------------------------

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import logging
 import re
+import time
 from datetime import date
 import json
 from pathlib import Path
@@ -8,8 +10,10 @@ from threading import RLock
 from typing import Iterable
 from uuid import uuid4
 
+log = logging.getLogger("vivo.memory")
 
 DEFAULT_MEMORY_PATH = "data/memory.md"
+DEFAULT_DREAMS_PATH = "data/dreams.json"
 MEMORY_LOCK = RLock()
 
 
@@ -158,6 +162,47 @@ class MemoryStore:
             self._write_index(facts)
             return summary
 
+    def _dream_candidates(self, limit: int = 20) -> list[dict[str, str]]:
+        """Facts worth handing to an LLM dream pass: core facts first (they
+        must survive), then the most recent archive facts."""
+        facts = self._facts()
+        core = [item for item in facts if item["core"]]
+        archive = sorted(
+            (item for item in facts if not item["core"]),
+            key=lambda item: item["date"],
+            reverse=True,
+        )
+        return (core + archive)[:limit]
+
+    def apply_dream(self, result: dict) -> dict:
+        """Apply a structured dream pass: keep new facts, drop pruned ones.
+        Core facts are never pruned. Returns stats about what changed."""
+        stats = {"added": 0, "skipped": 0, "pruned": 0}
+        with MEMORY_LOCK:
+            facts = self._facts()
+            for raw in result.get("new_facts") or []:
+                text = str(raw).strip()
+                if not text or len(text) > 500:
+                    stats["skipped"] += 1
+                    continue
+                if any(text.lower() == item["text"].lower() for item in facts):
+                    stats["skipped"] += 1
+                    continue
+                facts.append(self._new_fact(text, core=False))
+                stats["added"] += 1
+            core_ids = {item["id"] for item in facts if item["core"]}
+            for raw_id in result.get("pruned") or []:
+                fact_id = str(raw_id)
+                if fact_id in core_ids:
+                    stats["skipped"] += 1
+                    continue
+                if any(item["id"] == fact_id for item in facts):
+                    facts = [item for item in facts if item["id"] != fact_id]
+                    stats["pruned"] += 1
+            self._save_facts(facts)
+            self._write_index(facts)
+        return stats
+
     @staticmethod
     def _is_transient(candidate: str) -> bool:
         text = re.sub(r"^\[\d{4}-\d{2}-\d{2}\]\s*", "", candidate.strip())
@@ -221,40 +266,120 @@ class MemoryStore:
         temporary_path.replace(self.path)
 
 
+class DreamStore:
+    """History of dream passes: one JSON record per pass.
+
+    Records are appended newest-last and listed that way; a corrupt file is
+    treated as empty, like the rest of vivo's persistence.
+    """
+
+    def __init__(self, path: str = DEFAULT_DREAMS_PATH):
+        self.path = Path(path)
+        with MEMORY_LOCK:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            if not self.path.exists():
+                self._save([])
+
+    def list(self) -> list[dict]:
+        return self._dreams()
+
+    def get(self, dream_id: str) -> dict | None:
+        for dream in self.list():
+            if dream.get("id") == dream_id:
+                return dream
+        return None
+
+    def add(self, dream: dict) -> dict:
+        record = dict(dream)
+        record.setdefault("id", uuid4().hex)
+        record.setdefault("ts", time.time())
+        with MEMORY_LOCK:
+            dreams = self._dreams()
+            dreams.append(record)
+            self._save(dreams)
+        return record
+
+    def clear(self) -> None:
+        with MEMORY_LOCK:
+            self._save([])
+
+    def _dreams(self) -> list[dict]:
+        try:
+            raw = json.loads(self.path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return []
+        if not isinstance(raw, list):
+            return []
+        return [
+            dream
+            for dream in raw
+            if isinstance(dream, dict) and isinstance(dream.get("ts"), (int, float))
+        ]
+
+    def _save(self, dreams: list[dict]) -> None:
+        temporary_path = self.path.with_suffix(".tmp")
+        temporary_path.write_text(json.dumps(dreams, indent=2) + "\n", encoding="utf-8")
+        temporary_path.replace(self.path)
+
+
 class DreamScheduler:
-    """Background timer for periodic memory consolidation."""
+    """Background timer for periodic memory consolidation.
+
+    Each pass asks the LLM to distil the archive into a summary, new facts,
+    cross-fact connections and facts to prune (`Agent.dream_pass`). If no
+    agent is wired up, or the LLM pass fails, the deterministic
+    high-value-fact selection (`MemoryStore.consolidate`) runs instead, so
+    dreaming keeps working with a cold or broken model. Every pass is
+    recorded in a `DreamStore` and reported through `on_state` (called with
+    ``(active, phase)``) and `on_complete` (called with the record).
+    """
 
     def __init__(
         self,
         store: MemoryStore,
         interval_seconds: float = 3600.0,
         on_state=None,
+        agent=None,
+        dreams: DreamStore | None = None,
+        on_complete=None,
     ):
         self.store = store
         self.interval_seconds = interval_seconds
+        self.agent = agent
+        self.dreams = dreams
         self._stop = False
         self._thread = None
         self._state = False
         self._state_cb = on_state
+        self._complete_cb = on_complete
 
-    def _set_state(self, active: bool) -> None:
-        if self._state == active:
+    def _set_state(self, active: bool, phase: str = "") -> None:
+        if self._state == active and not phase:
             return
         self._state = active
         if self._state_cb is not None:
-            self._state_cb(active)
+            self._state_cb(active, phase)
 
-    def trigger(self) -> str:
-        """Run one dream pass immediately, reporting the summary and state.
+    def trigger(self) -> dict:
+        """Run one dream pass immediately and return its record.
 
-        The pass is intentionally synchronous so a manual trigger can return its
-        result to the caller (HTTP or UI) without a side-channel wait.
+        The pass is intentionally synchronous so a manual trigger can return
+        its result to the caller (HTTP or UI) without a side-channel wait.
         """
-        self._set_state(True)
+        self._set_state(True, "consolidating")
         try:
-            return self.store.consolidate()
+            record = self._run_pass()
+        except Exception:
+            log.exception("dream pass failed; keeping previous memory")
+            record = self._failed_record()
         finally:
             self._set_state(False)
+        if self._complete_cb is not None:
+            try:
+                self._complete_cb(record)
+            except Exception:
+                log.exception("dream completion callback failed")
+        return record
 
     def start(self) -> None:
         if self._thread and self._thread.is_alive():
@@ -271,8 +396,65 @@ class DreamScheduler:
 
     def _run(self) -> None:
         while not self._stop:
-            import time as _time
-            _time.sleep(self.interval_seconds)
+            time.sleep(self.interval_seconds)
             if self._stop:
                 return
             self.trigger()
+
+    # -- passes -------------------------------------------------------------
+    def _run_pass(self) -> dict:
+        if self.agent is not None:
+            try:
+                return self._llm_pass()
+            except Exception:
+                log.exception(
+                    "LLM dream pass failed; using deterministic consolidation"
+                )
+        return self._deterministic_pass()
+
+    def _llm_pass(self) -> dict:
+        candidates = self.store._dream_candidates()
+        result = self.agent.dream_pass(self.store.archive_text(), candidates)
+        stats = self.store.apply_dream(result)
+        record = {
+            "id": uuid4().hex,
+            "ts": time.time(),
+            "llm": True,
+            "summary": result.get("summary") or "",
+            "new_facts": result.get("new_facts") or [],
+            "connections": result.get("connections") or [],
+            "pruned": result.get("pruned") or [],
+            "stats": stats,
+        }
+        if self.dreams is not None:
+            record = self.dreams.add(record)
+        return record
+
+    def _deterministic_pass(self) -> dict:
+        summary = self.store.consolidate()
+        promoted = sum(1 for item in self.store.list() if item["core"])
+        record = {
+            "id": uuid4().hex,
+            "ts": time.time(),
+            "llm": False,
+            "summary": summary,
+            "new_facts": [],
+            "connections": [],
+            "pruned": [],
+            "stats": {"promoted": promoted},
+        }
+        if self.dreams is not None:
+            record = self.dreams.add(record)
+        return record
+
+    def _failed_record(self) -> dict:
+        return {
+            "id": uuid4().hex,
+            "ts": time.time(),
+            "llm": False,
+            "summary": "No important memory yet.",
+            "new_facts": [],
+            "connections": [],
+            "pruned": [],
+            "stats": {},
+        }

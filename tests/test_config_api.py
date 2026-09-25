@@ -182,6 +182,24 @@ def test_api_post_validates_writes_and_applies(api_env):
         assert "must be at least" in str(bad2.json()["detail"])
 
 
+def test_hidden_token_threshold_is_validated_and_applied(api_env):
+    """compact_after_tokens is a hidden key: not shown in the pane, but it is
+    validated, persisted and hot-applied like any other setting."""
+    spec = config_schema.SCHEMA["memory"]["keys"]["compact_after_tokens"]
+    assert spec["hidden"] is True
+
+    with TestClient(_offline_app()) as c:
+        r = c.post("/api/config", json={"values": {"memory": {"compact_after_tokens": 4000}}})
+        assert r.status_code == 200, r.text
+        assert r.json()["values"]["memory"]["compact_after_tokens"] == 4000
+        assert config.COMPACT_AFTER_TOKENS == 4000
+        assert "compact_after_tokens = 4000" in api_env.read_text()
+
+        bad = c.post("/api/config", json={"values": {"memory": {"compact_after_tokens": -1}}})
+        assert bad.status_code == 400
+        assert "must be at least" in str(bad.json()["detail"])
+
+
 # ---------------- broadcast to open sessions ----------------
 
 class _FakeWS:

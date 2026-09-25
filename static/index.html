@@ -84,11 +84,11 @@
         </svg>
         <span class="nav-label">Wake</span>
       </button>
-      <button class="nav-btn" id="btn-dream" title="Run a memory dream pass now">
+      <button class="nav-btn" id="btn-dream" title="Dreams — memory dream passes and history">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
           <path d="M20.5 14.5A8.5 8.5 0 1 1 9.5 3.5a7 7 0 1 0 11 11z"/>
         </svg>
-        <span class="nav-label">Dream</span>
+        <span class="nav-label">Dreams</span>
       </button>
     </div>
 
@@ -125,8 +125,15 @@
           <path d="M10 17.5a2 2 0 0 0 4 0"/>
           <path d="M12 3.5v-1M19.5 6l.8-.8M4.5 6l-.8-.8"/>
         </svg>
-        <span class="nav-label">Reminders</span>
-      </button>
+          <span class="nav-label">Reminders</span>
+        </button>
+        <button class="nav-btn" id="btn-logs" title="System log">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M5 4.5h14v15H5z"/>
+            <path d="M8.5 9l-2 2.5 2 2.5M15.5 9l2 2.5-2 2.5"/>
+          </svg>
+          <span class="nav-label">Logs</span>
+        </button>
     </div>
   </nav>
 
@@ -406,6 +413,65 @@
       <button class="ghost" id="btn-reminder-close">Close</button>
       <button class="ghost danger-action" id="btn-reminder-delete" disabled>Delete</button>
       <button class="primary" id="btn-reminder-save">Save</button>
+    </div>
+  </dialog>
+
+  <dialog id="dreams" class="skills-dialog">
+    <div class="settings-head">
+      <h2>Dreams</h2>
+      <span class="dream-status" id="dream-status"></span>
+      <span class="panel-spacer"></span>
+      <button class="ghost tiny" id="btn-dream-now" title="Run a memory dream pass now">Dream now</button>
+      <button class="ghost" id="btn-dreams-x" title="Close">&times;</button>
+    </div>
+    <div class="skills-body">
+      <aside class="skills-list" aria-label="Dream history">
+        <div class="skills-list-head">
+          <span>History</span>
+          <button class="ghost tiny" id="btn-dreams-clear" title="Clear the dream history">clear</button>
+        </div>
+        <div id="dreams-list-items" class="skills-list-items"></div>
+      </aside>
+      <div class="skills-editor dreams-detail">
+        <p class="dreams-detail-hint" id="dreams-detail-hint">Select a dream to see what it consolidated.</p>
+        <div id="dream-detail" hidden>
+          <p class="dream-meta" id="dream-meta"></p>
+          <h3 class="dreams-h">Summary</h3>
+          <p class="dream-summary" id="dream-summary"></p>
+          <h3 class="dreams-h">New facts</h3>
+          <div id="dream-facts"></div>
+          <h3 class="dreams-h">Connections</h3>
+          <div id="dream-connections"></div>
+        </div>
+      </div>
+    </div>
+    <div class="settings-foot">
+      <span class="settings-msg" id="dreams-msg"></span>
+      <span class="settings-spacer"></span>
+      <button class="ghost" id="btn-dreams-close">Close</button>
+    </div>
+  </dialog>
+
+  <dialog id="logs" class="logs-dialog">
+    <div class="settings-head">
+      <h2>System log</h2>
+      <label class="logs-level" for="logs-level">level
+        <select id="logs-level" title="Show entries at this level or above">
+          <option value="">all</option>
+          <option value="INFO">info +</option>
+          <option value="WARNING">warning +</option>
+          <option value="ERROR">errors only</option>
+        </select>
+      </label>
+      <span class="panel-spacer"></span>
+      <button class="ghost tiny" id="btn-logs-clear" title="Clear the system log">clear</button>
+      <button class="ghost" id="btn-logs-x" title="Close">&times;</button>
+    </div>
+    <div class="logs-body" id="logs-body" aria-live="polite"></div>
+    <div class="settings-foot">
+      <span class="settings-msg" id="logs-msg"></span>
+      <span class="settings-spacer"></span>
+      <button class="ghost" id="btn-logs-close">Close</button>
     </div>
   </dialog>
 

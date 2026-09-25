@@ -114,6 +114,28 @@ const el = {
   btnReminderClose: $("btn-reminder-close"),
   btnRemindersX: $("btn-reminders-x"),
   btnReminders: $("btn-reminders"),
+  btnLogs: $("btn-logs"),
+  dreamsDlg: $("dreams"),
+  dreamsList: $("dreams-list-items"),
+  dreamsDetail: $("dream-detail"),
+  dreamsDetailHint: $("dreams-detail-hint"),
+  dreamMeta: $("dream-meta"),
+  dreamSummary: $("dream-summary"),
+  dreamFacts: $("dream-facts"),
+  dreamConnections: $("dream-connections"),
+  dreamStatus: $("dream-status"),
+  dreamsMsg: $("dreams-msg"),
+  btnDreamNow: $("btn-dream-now"),
+  btnDreamsClear: $("btn-dreams-clear"),
+  btnDreamsClose: $("btn-dreams-close"),
+  btnDreamsX: $("btn-dreams-x"),
+  logsDlg: $("logs"),
+  logsBody: $("logs-body"),
+  logsLevel: $("logs-level"),
+  logsMsg: $("logs-msg"),
+  btnLogsClear: $("btn-logs-clear"),
+  btnLogsClose: $("btn-logs-close"),
+  btnLogsX: $("btn-logs-x"),
   hint: $("hint"),
   telUplink: $("tel-uplink"),
   telPipeline: $("tel-pipeline"),
@@ -598,9 +620,19 @@ function handleServerJson(m) {
       return; // wake state never touches the pipeline UI
     case "dream":
       S.dreaming = !!m.active;
+      updateDreamStatus(m.phase);
       updateStatus();
       draw();
       scheduleVisualFrame();
+      if (m.phase === "complete" && el.dreamsDlg.open) refreshDreams();
+      return;
+    case "compact":
+      // conversation history was compacted — note it in the transcript when
+      // it happened in this tab's conversation
+      if (m.session_id === S.sessionId) addCompactEntry(m);
+      return;
+    case "log_entry":
+      if (el.logsDlg.open) appendLogEntry(m.entry);
       return;
     case "browser_view":
       // the browser_view tool toggles the viewport panel for the user
@@ -723,6 +755,28 @@ function addToolEntry(name, result, status = "ok", durationMs = null) {
   el.transcript.appendChild(d);
   scrollTranscript();
   return d;
+}
+
+function addCompactEntry(m) {
+  // compacted history marker: collapsible, summary rendered as plain text
+  const d = document.createElement("details");
+  d.className = "entry entry-compact";
+  const summary = document.createElement("summary");
+  const ts = document.createElement("span");
+  ts.className = "t";
+  ts.textContent = tsNow();
+  const who = document.createElement("span");
+  who.className = "who";
+  who.textContent = "compact";
+  const hint = document.createElement("span");
+  hint.className = "compact-hint";
+  hint.textContent = `history compacted · ${m.turns_before} → ${m.turns_after} turns`;
+  summary.append(ts, who, hint);
+  const body = document.createElement("p");
+  body.textContent = m.summary || "(no summary)";
+  d.append(summary, body);
+  el.transcript.appendChild(d);
+  scrollTranscript();
 }
 
 function appendAgent(delta, start, filler) {
@@ -1420,6 +1474,7 @@ async function triggerDream() {
     addEntry("error", "server disconnected — dream couldn't start");
     return;
   }
+  el.btnDreamNow.disabled = true;
   try {
     const res = await fetch("/api/dream", { method: "POST" });
     if (!res.ok) {
@@ -1432,8 +1487,11 @@ async function triggerDream() {
     } else {
       addEntry("hint", "dreamed: nothing notable yet");
     }
+    if (el.dreamsDlg.open) await refreshDreams(j.dream && j.dream.id);
   } catch (err) {
     addEntry("error", `dream failed: ${escapeHtml(err.message || String(err))}`);
+  } finally {
+    el.btnDreamNow.disabled = false;
   }
 }
 
@@ -1469,14 +1527,15 @@ async function openSettings() {
     const summary = document.createElement("summary");
     const title = document.createElement("span");
     title.textContent = spec.title;
+    const visibleKeys = Object.entries(spec.keys).filter(([, k]) => !k.hidden);
     const count = document.createElement("span");
     count.className = "ssection-count";
-    count.textContent = `${Object.keys(spec.keys).length} settings`;
+    count.textContent = `${visibleKeys.length} settings`;
     summary.append(title, count);
     section.appendChild(summary);
     const content = document.createElement("div");
     content.className = "ssection-content";
-    for (const [key, k] of Object.entries(spec.keys)) {
+    for (const [key, k] of visibleKeys) {
       content.appendChild(buildSettingRow(sec, key, k));
     }
     section.appendChild(content);
@@ -2061,7 +2120,8 @@ async function saveSettings() {
   const values = {};
   for (const [sec, spec] of Object.entries(settings.schema)) {
     values[sec] = {};
-    for (const key of Object.keys(spec.keys)) {
+    for (const [key, k] of Object.entries(spec.keys)) {
+      if (k.hidden) continue; // hidden keys are managed outside the pane
       const row = el.settingsBody.querySelector(`.srow[data-sec="${sec}"][data-key="${key}"]`);
       values[sec][key] = readSettingRow(row);
     }
@@ -2711,6 +2771,304 @@ async function deleteReminder() {
   }
 }
 
+/* ---------------- dreams (T031) ----------------
+ * Memory dream passes, background and manual. Each dream record carries a
+ * summary, new facts (saveable straight into memory), connections, and the
+ * ids it pruned. The nav moon opens this pane; "Dream now" runs a pass.
+ */
+
+const dreamsUi = { selected: "", items: [] };
+let dreamsMsgTimer = null;
+
+function flashDreamsMsg(text, isError) {
+  el.dreamsMsg.textContent = text;
+  el.dreamsMsg.className = "settings-msg" + (isError ? " err" : " ok");
+  if (dreamsMsgTimer) clearTimeout(dreamsMsgTimer);
+  dreamsMsgTimer = setTimeout(() => {
+    el.dreamsMsg.textContent = "";
+    el.dreamsMsg.className = "settings-msg";
+  }, 3000);
+}
+
+function updateDreamStatus(phase) {
+  if (S.dreaming) {
+    el.dreamStatus.textContent = phase === "consolidating" ? "dreaming…" : "dreaming";
+    el.dreamStatus.hidden = false;
+  } else if (phase === "complete") {
+    el.dreamStatus.textContent = "last pass complete";
+    el.dreamStatus.hidden = false;
+  } else {
+    el.dreamStatus.textContent = "";
+    el.dreamStatus.hidden = true;
+  }
+}
+
+function dreamTsFormat(ts) {
+  const d = new Date(Number(ts) * 1000);
+  if (!Number.isFinite(d.getTime())) return "dream";
+  const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+  const p = (n) => String(n).padStart(2, "0");
+  return `${months[d.getMonth()]} ${d.getDate()} · ${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+
+function renderDreamsList() {
+  el.dreamsList.innerHTML = "";
+  if (!dreamsUi.items.length) {
+    const empty = document.createElement("p");
+    empty.className = "skills-empty";
+    empty.textContent = "No dreams yet.";
+    el.dreamsList.appendChild(empty);
+    return;
+  }
+  for (const dream of dreamsUi.items) {
+    const item = document.createElement("button");
+    item.type = "button";
+    item.className = "skill-list-item" + (dream.id === dreamsUi.selected ? " active" : "");
+    const text = document.createElement("strong");
+    text.textContent = dreamTsFormat(dream.ts);
+    const meta = document.createElement("span");
+    const facts = (dream.new_facts || []).length;
+    meta.textContent = `${dream.llm ? "llm" : "auto"} · ${facts} new fact${facts === 1 ? "" : "s"}`;
+    item.append(text, meta);
+    item.addEventListener("click", () => loadDream(dream.id));
+    el.dreamsList.appendChild(item);
+  }
+}
+
+async function refreshDreams(selected = dreamsUi.selected) {
+  const res = await fetch("/api/dreams");
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
+  dreamsUi.items = data.dreams || [];
+  if (!dreamsUi.items.some((item) => item.id === selected)) selected = "";
+  dreamsUi.selected = selected;
+  renderDreamsList();
+  if (el.dreamsDlg.open) loadDream(dreamsUi.selected);
+}
+
+async function openDreams() {
+  el.dreamsDlg.showModal();
+  try {
+    await refreshDreams();
+    if (!dreamsUi.selected && dreamsUi.items.length) loadDream(dreamsUi.items[0].id);
+    else loadDream("");
+  } catch (err) {
+    flashDreamsMsg(`could not load dreams: ${err.message}`, true);
+  }
+}
+
+function loadDream(id) {
+  dreamsUi.selected = id;
+  const dream = dreamsUi.items.find((item) => item.id === id);
+  if (!dream) {
+    el.dreamsDetail.hidden = true;
+    el.dreamsDetailHint.hidden = false;
+    renderDreamsList();
+    return;
+  }
+  el.dreamsDetailHint.hidden = true;
+  el.dreamsDetail.hidden = false;
+  el.dreamMeta.textContent = `${dreamTsFormat(dream.ts)} · ${dream.llm ? "llm dream" : "auto-consolidation"}`;
+  el.dreamSummary.textContent = dream.summary || "(no summary)";
+  const facts = dream.new_facts || [];
+  el.dreamFacts.innerHTML = "";
+  if (!facts.length) {
+    const p = document.createElement("p");
+    p.className = "dream-muted";
+    p.textContent = "None.";
+    el.dreamFacts.appendChild(p);
+  } else {
+    for (const fact of facts) {
+      const row = document.createElement("div");
+      row.className = "dream-fact-row";
+      const text = document.createElement("span");
+      text.className = "dream-fact-text";
+      text.textContent = fact;
+      const save = document.createElement("button");
+      save.type = "button";
+      save.className = "ghost tiny";
+      save.textContent = "save to memory";
+      save.addEventListener("click", () => saveDreamFact(fact, save));
+      row.append(text, save);
+      el.dreamFacts.appendChild(row);
+    }
+  }
+  const connections = dream.connections || [];
+  el.dreamConnections.innerHTML = "";
+  if (!connections.length) {
+    const p = document.createElement("p");
+    p.className = "dream-muted";
+    p.textContent = "None.";
+    el.dreamConnections.appendChild(p);
+  } else {
+    const ul = document.createElement("ul");
+    ul.className = "dream-connection-list";
+    for (const conn of connections) {
+      const li = document.createElement("li");
+      li.textContent = conn;
+      ul.appendChild(li);
+    }
+    el.dreamConnections.appendChild(ul);
+  }
+  renderDreamsList();
+}
+
+async function saveDreamFact(text, btn) {
+  btn.disabled = true;
+  try {
+    const res = await fetch("/api/memory", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
+    btn.textContent = "saved";
+    flashDreamsMsg("fact saved to memory");
+  } catch (err) {
+    btn.disabled = false;
+    flashDreamsMsg(`save failed: ${err.message}`, true);
+  }
+}
+
+async function clearDreams() {
+  if (!dreamsUi.items.length) return;
+  if (!confirm("clear the dream history?")) return;
+  el.btnDreamsClear.disabled = true;
+  try {
+    const res = await fetch("/api/dreams", { method: "DELETE" });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
+    dreamsUi.selected = "";
+    await refreshDreams();
+    loadDream("");
+    flashDreamsMsg("dream history cleared");
+  } catch (err) {
+    flashDreamsMsg(`clear failed: ${err.message}`, true);
+  } finally {
+    el.btnDreamsClear.disabled = false;
+  }
+}
+
+/* ---------------- system log (T030) ----------------
+ * The rolling vivo log: new entries stream in over the websocket, the
+ * persisted buffer loads on open. The visible tail is bounded so a busy
+ * afternoon can't blow up the DOM.
+ */
+
+const LOGS_DOM_LIMIT = 400;
+const LOG_LEVELS = ["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"];
+let logsMsgTimer = null;
+
+function logLevelAtLeast(entry, minLevel) {
+  if (!minLevel) return true;
+  const minRank = LOG_LEVELS.indexOf(minLevel);
+  if (minRank < 0) return true;
+  const rank = LOG_LEVELS.indexOf(String(entry.level || "").toUpperCase());
+  return rank >= minRank;
+}
+
+function logTsFormat(ts) {
+  const d = new Date(Number(ts) * 1000);
+  if (!Number.isFinite(d.getTime())) return "    ";
+  const p = (n) => String(n).padStart(2, "0");
+  return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+}
+
+function renderLogRow(entry) {
+  const row = document.createElement("div");
+  row.className = `log-row log-${String(entry.level || "info").toLowerCase()}`;
+  const ts = document.createElement("span");
+  ts.className = "log-ts";
+  ts.textContent = logTsFormat(entry.ts);
+  const level = document.createElement("span");
+  level.className = "log-level";
+  level.textContent = String(entry.level || "").slice(0, 4) || "    ";
+  const msg = document.createElement("span");
+  msg.className = "log-msg";
+  msg.textContent = entry.message || "";
+  row.append(ts, level, msg);
+  if (entry.event) {
+    row.title = entry.event + (entry.session_id ? ` (${entry.session_id})` : "");
+  }
+  return row;
+}
+
+function trimLogsDom() {
+  while (el.logsBody.children.length > LOGS_DOM_LIMIT) {
+    el.logsBody.removeChild(el.logsBody.firstChild);
+  }
+}
+
+function syncLogsEmpty() {
+  const hasRows = !!el.logsBody.querySelector(".log-row");
+  const empty = el.logsBody.querySelector(".skills-empty");
+  if (hasRows && empty) empty.remove();
+  else if (!hasRows && !empty) {
+    const p = document.createElement("p");
+    p.className = "skills-empty";
+    p.textContent = "No log entries.";
+    el.logsBody.appendChild(p);
+  }
+}
+
+function appendLogEntry(entry) {
+  if (!entry || !logLevelAtLeast(entry, el.logsLevel.value)) return;
+  el.logsBody.appendChild(renderLogRow(entry));
+  trimLogsDom();
+  syncLogsEmpty();
+  el.logsBody.scrollTop = el.logsBody.scrollHeight;
+}
+
+async function refreshLogs() {
+  const res = await fetch("/api/logs");
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
+  el.logsBody.innerHTML = "";
+  for (const entry of data.entries || []) {
+    if (logLevelAtLeast(entry, el.logsLevel.value)) el.logsBody.appendChild(renderLogRow(entry));
+  }
+  trimLogsDom();
+  syncLogsEmpty();
+  el.logsBody.scrollTop = el.logsBody.scrollHeight;
+}
+
+function flashLogsMsg(text, isError) {
+  el.logsMsg.textContent = text;
+  el.logsMsg.className = "settings-msg" + (isError ? " err" : " ok");
+  if (logsMsgTimer) clearTimeout(logsMsgTimer);
+  logsMsgTimer = setTimeout(() => {
+    el.logsMsg.textContent = "";
+    el.logsMsg.className = "settings-msg";
+  }, 3000);
+}
+
+async function openLogs() {
+  el.logsDlg.showModal();
+  try {
+    await refreshLogs();
+  } catch (err) {
+    flashLogsMsg(`could not load log: ${err.message}`, true);
+  }
+}
+
+async function clearLogs() {
+  if (!confirm("clear the system log?")) return;
+  el.btnLogsClear.disabled = true;
+  try {
+    const res = await fetch("/api/logs", { method: "DELETE" });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
+    el.logsBody.innerHTML = "";
+    syncLogsEmpty();
+    flashLogsMsg("log cleared");
+  } catch (err) {
+    flashLogsMsg(`clear failed: ${err.message}`, true);
+  } finally {
+    el.btnLogsClear.disabled = false;
+  }
+}
+
 /* ---------------- wiring ---------------- */
 
 el.btnStart.addEventListener("click", async () => {
@@ -2742,7 +3100,7 @@ el.textInput.addEventListener("keydown", (ev) => {
   }
 });
 el.btnWake.addEventListener("click", () => sendJson({ type: "wake" }));
-el.btnDream.addEventListener("click", triggerDream);
+el.btnDream.addEventListener("click", openDreams);
 el.outputVolume.addEventListener("input", () => setOutputVolume(Number(el.outputVolume.value) / 100));
 
 el.btnClear.addEventListener("click", () => {
@@ -2831,6 +3189,27 @@ el.reminderSession.addEventListener("change", () => {
 });
 el.reminderText.addEventListener("keydown", (ev) => {
   if (ev.key === "Enter" && (ev.metaKey || ev.ctrlKey)) saveReminder();
+});
+
+el.btnDreamNow.addEventListener("click", triggerDream);
+el.btnDreamsClear.addEventListener("click", clearDreams);
+const closeDreams = () => el.dreamsDlg.close();
+el.btnDreamsClose.addEventListener("click", closeDreams);
+el.btnDreamsX.addEventListener("click", closeDreams);
+el.dreamsDlg.addEventListener("click", (ev) => {
+  if (ev.target === el.dreamsDlg) closeDreams();
+});
+
+el.btnLogs.addEventListener("click", openLogs);
+el.btnLogsClear.addEventListener("click", clearLogs);
+el.logsLevel.addEventListener("change", () => {
+  if (el.logsDlg.open) refreshLogs();
+});
+const closeLogs = () => el.logsDlg.close();
+el.btnLogsClose.addEventListener("click", closeLogs);
+el.btnLogsX.addEventListener("click", closeLogs);
+el.logsDlg.addEventListener("click", (ev) => {
+  if (ev.target === el.logsDlg) closeLogs();
 });
 
 el.btnBrowser.addEventListener("click", () =>

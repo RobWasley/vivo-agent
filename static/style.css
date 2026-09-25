@@ -2251,3 +2251,239 @@ button.danger-action:hover {
   color: var(--text);
 }
 
+/* ---------------- compact transcript entry (T026) ---------------- */
+
+.entry-compact {
+  display: block;
+}
+
+.entry-compact summary {
+  display: grid;
+  grid-template-columns: 62px 52px 1fr;
+  gap: 10px;
+  align-items: baseline;
+  cursor: pointer;
+  list-style: none;
+}
+
+.entry-compact summary::-webkit-details-marker {
+  display: none;
+}
+
+.entry-compact summary::marker {
+  content: "";
+}
+
+.entry-compact .who {
+  color: var(--dream);
+}
+
+.compact-hint {
+  margin-left: auto;
+  color: var(--faint);
+  font-size: 0.62rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.entry-compact[open] .compact-hint {
+  color: var(--dream);
+}
+
+.entry-compact p {
+  margin: 8px 0 0 72px;
+  border-top: 1px solid rgba(167, 139, 250, 0.14);
+  padding-top: 8px;
+  font-size: 0.8rem;
+  line-height: 1.5;
+  color: var(--muted);
+}
+
+/* ---------------- dreams dialog (T031) ---------------- */
+
+.dream-status {
+  font-family: var(--font-mono);
+  font-size: 0.64rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--dream);
+}
+
+.dreams-detail {
+  grid-template-rows: auto auto minmax(0, 1fr);
+  align-content: start;
+}
+
+.dreams-detail-hint {
+  margin: 0;
+  font-size: 0.8rem;
+  color: var(--faint);
+}
+
+.dream-meta {
+  margin: 0 0 4px;
+  font-family: var(--font-mono);
+  font-size: 0.68rem;
+  letter-spacing: 0.06em;
+  color: var(--dream);
+}
+
+.dreams-h {
+  margin: 16px 0 6px;
+  font-family: var(--font-mono);
+  font-size: 0.62rem;
+  font-weight: 500;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.dream-summary {
+  margin: 0;
+  font-size: 0.84rem;
+  line-height: 1.55;
+  color: var(--text);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.dream-muted {
+  margin: 0;
+  font-size: 0.78rem;
+  color: var(--faint);
+}
+
+.dream-fact-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 7px 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.dream-fact-row:last-child {
+  border-bottom: none;
+}
+
+.dream-fact-text {
+  font-size: 0.8rem;
+  line-height: 1.45;
+  color: var(--text);
+}
+
+.dream-connection-list {
+  margin: 0;
+  padding-left: 18px;
+  font-size: 0.8rem;
+  line-height: 1.5;
+  color: var(--muted);
+}
+
+/* ---------------- system log dialog (T030) ---------------- */
+
+.logs-dialog {
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius);
+  background: linear-gradient(180deg, #0d1524, #080e1a);
+  color: var(--text);
+  width: min(760px, 94vw);
+  max-height: 86vh;
+  padding: 0;
+  margin: 0;
+  box-shadow: var(--shadow);
+}
+
+.logs-dialog[open] {
+  display: flex;
+  flex-direction: column;
+}
+
+.logs-dialog::backdrop {
+  background: rgba(2, 6, 12, 0.72);
+  backdrop-filter: blur(4px);
+}
+
+.logs-level {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--font-mono);
+  font-size: 0.64rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.logs-level select {
+  border: 1px solid var(--line-strong);
+  border-radius: 6px;
+  background: var(--bg-2);
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  padding: 2px 6px;
+}
+
+.logs-body {
+  overflow-y: auto;
+  min-height: 0;
+  padding: 10px 16px;
+  font-family: var(--font-mono);
+  font-size: 0.74rem;
+  line-height: 1.7;
+  background: rgba(4, 9, 17, 0.28);
+}
+
+.log-row {
+  display: grid;
+  grid-template-columns: 74px 50px minmax(0, 1fr);
+  gap: 12px;
+  padding: 1px 4px;
+  border-radius: 4px;
+}
+
+.log-row:hover {
+  background: rgba(56, 189, 248, 0.06);
+}
+
+.log-ts {
+  color: var(--faint);
+}
+
+.log-level {
+  font-weight: 600;
+}
+
+.log-msg {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  color: #c2cfe4;
+}
+
+.log-debug .log-msg {
+  color: var(--faint);
+}
+
+.log-info .log-level {
+  color: var(--accent);
+}
+
+.log-warning .log-level {
+  color: var(--speak);
+}
+
+.log-warning .log-msg {
+  color: var(--text);
+}
+
+.log-error .log-level,
+.log-critical .log-level {
+  color: var(--err);
+}
+
+.log-error .log-msg,
+.log-critical .log-msg {
+  color: var(--err);
+}
+

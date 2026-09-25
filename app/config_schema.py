@@ -14,6 +14,7 @@ Per-key spec fields:
   min/max  bounds for numeric types
   step     slider step for numeric types
   choices  static dropdown values (for `str` with a fixed set)
+  hidden   true — validated and persisted but not shown in the pane
 """
 
 SCHEMA = {
@@ -469,6 +470,18 @@ SCHEMA = {
                 "max": 100000,
                 "step": 500,
                 "attr": "COMPACT_AFTER_CHARS",
+            },
+            "compact_after_tokens": {
+                "type": "int",
+                "label": "Compact after (tokens)",
+                "help": "Token-based compaction threshold. 0 disables it (the character threshold "
+                        "decides). Useful when the model's context is measured in tokens.",
+                "apply": "now",
+                "min": 0,
+                "max": 200000,
+                "step": 500,
+                "hidden": True,
+                "attr": "COMPACT_AFTER_TOKENS",
             },
             "keep_recent_turns": {
                 "type": "int",

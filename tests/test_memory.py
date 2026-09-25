@@ -72,3 +72,133 @@ def test_memory_api_manages_archive_and_core(tmp_path):
         assert updated.status_code == 200 and updated.json()["fact"]["core"] is True
         assert client.delete(f"/api/memory/{fact['id']}").status_code == 200
         assert client.get("/api/memory").json()["facts"] == []
+
+
+# -- LLM dreaming: candidates, application, history (T031) --------------------
+
+
+def test_dream_candidates_list_core_facts_first(tmp_path):
+    store = MemoryStore(str(tmp_path / "memory.md"))
+    store.add("archive one")
+    core = store.add("core fact", core=True)
+    store.add("archive two")
+
+    candidates = store._dream_candidates()
+
+    assert candidates[0]["id"] == core["id"]
+    assert {item["id"] for item in candidates} == {
+        item["id"] for item in store.list()
+    }
+
+
+def test_apply_dream_adds_skips_and_prunes_only_non_core(tmp_path):
+    store = MemoryStore(str(tmp_path / "memory.md"))
+    core = store.add("Rob prefers concise answers", core=True)
+    store.add("The weather station is in the garden")
+    drop = store.add("Reminder fired: water the plants")
+
+    stats = store.apply_dream({
+        "summary": "S",
+        "new_facts": [
+            "Rob prefers concise answers",  # duplicate
+            "New durable fact",
+            "x" * 600,  # too long
+            "   ",  # blank
+        ],
+        "connections": [],
+        "pruned": [drop["id"], core["id"], "no-such-id"],
+    })
+
+    items = store.list()
+    texts = [item["text"] for item in items]
+    ids = [item["id"] for item in items]
+    assert "New durable fact" in texts
+    assert "Reminder fired: water the plants" not in texts
+    assert "The weather station is in the garden" in texts
+    assert core["id"] in ids  # core facts are never pruned
+    assert stats == {"added": 1, "skipped": 4, "pruned": 1}
+
+
+def test_apply_dream_empty_result_is_a_noop(tmp_path):
+    store = MemoryStore(str(tmp_path / "memory.md"))
+    store.add("a fact")
+
+    assert store.apply_dream({}) == {"added": 0, "skipped": 0, "pruned": 0}
+    assert len(store.list()) == 1
+
+
+def test_dream_store_appends_lists_and_clears(tmp_path):
+    from app.memory import DreamStore
+
+    path = str(tmp_path / "dreams.json")
+    dreams = DreamStore(path=path)
+    assert dreams.list() == []
+    first = dreams.add({"summary": "s1", "llm": False})
+    second = dreams.add({"summary": "s2", "llm": True})
+    assert first["id"] and second["id"] != first["id"]
+    assert [d["summary"] for d in dreams.list()] == ["s1", "s2"]
+    assert dreams.get(second["id"])["summary"] == "s2"
+
+    dreams.clear()
+    assert DreamStore(path=path).list() == []
+
+
+def test_dream_store_corrupt_file_starts_empty(tmp_path):
+    from app.memory import DreamStore
+
+    p = tmp_path / "dreams.json"
+    p.write_text("{not json", encoding="utf-8")
+    dreams = DreamStore(path=str(p))
+    assert dreams.list() == []
+    record = dreams.add({"summary": "ok"})
+    assert dreams.get(record["id"]) is not None
+
+
+def test_dream_scheduler_llm_pass_applies_and_records(tmp_path):
+    from app.memory import DreamScheduler, DreamStore, MemoryStore
+
+    store = MemoryStore(path=str(tmp_path / "memory.md"))
+    dreams = DreamStore(path=str(tmp_path / "dreams.json"))
+    core = store.add("core fact", core=True)
+    archive = store.add("archive fact")
+
+    class FakeAgent:
+        def dream_pass(self, archive_text, candidates):
+            assert "core fact" in archive_text
+            return {
+                "summary": "LLM summary",
+                "new_facts": ["fresh fact"],
+                "connections": ["core fact <-> archive fact"],
+                "pruned": [archive["id"], core["id"]],
+            }
+
+    completed = []
+    scheduler = DreamScheduler(
+        store, interval_seconds=999, agent=FakeAgent(), dreams=dreams,
+        on_complete=completed.append,
+    )
+    record = scheduler.trigger()
+
+    assert record["llm"] is True
+    assert record["summary"] == "LLM summary"
+    assert record["stats"]["pruned"] == 1  # core fact survived
+    assert [d["id"] for d in dreams.list()] == [record["id"]]
+    assert completed == [record]
+    texts = [item["text"] for item in store.list()]
+    assert "fresh fact" in texts and "archive fact" not in texts
+
+
+def test_dream_scheduler_falls_back_when_llm_raises(tmp_path):
+    from app.memory import DreamScheduler, MemoryStore
+
+    store = MemoryStore(path=str(tmp_path / "memory.md"))
+    store.observe("Rob prefers concise answers")
+
+    class BrokenAgent:
+        def dream_pass(self, archive_text, candidates):
+            raise RuntimeError("model down")
+
+    record = DreamScheduler(store, interval_seconds=999, agent=BrokenAgent()).trigger()
+
+    assert record["llm"] is False
+    assert "concise answers" in record["summary"]

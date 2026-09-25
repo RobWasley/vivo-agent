@@ -212,6 +212,10 @@ def _emit() -> None:
     # Compact history once it grows past this many characters (roughly /4 tokens),
     # keeping the most recent N turns verbatim.
     g["COMPACT_AFTER_CHARS"] = _get("memory", "compact_after_chars", "COMPACT_AFTER_CHARS", 12000, int)
+    # Optional token-based threshold (hidden setting): 0 disables it and the
+    # character threshold above decides. Token counts are best-effort (tiktoken
+    # when installed, ~4 chars/token otherwise), never a hard dependency.
+    g["COMPACT_AFTER_TOKENS"] = _get("memory", "compact_after_tokens", "COMPACT_AFTER_TOKENS", 0, int)
     g["KEEP_RECENT_TURNS"] = _get("memory", "keep_recent_turns", "KEEP_RECENT_TURNS", 4, int)
     # Hourly background pass to identify high-value facts and fold them into the
     # local memory store (memory.md) without burning CPU on every turn.
@@ -321,6 +325,7 @@ def effective_dict() -> dict:
         },
         "memory": {
             "compact_after_chars": g["COMPACT_AFTER_CHARS"],
+            "compact_after_tokens": g["COMPACT_AFTER_TOKENS"],
             "keep_recent_turns": g["KEEP_RECENT_TURNS"],
             "dream_interval_s": g["DREAM_INTERVAL_S"],
         },

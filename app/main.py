@@ -110,7 +110,8 @@ async def post_config(body: ConfigPayload, request: Request):
     if errors:
         raise HTTPException(status_code=400, detail=errors)
     data = config.effective_dict()
-    for section, keys in config_schema.coerce(body.values).items():
+    changes = config_schema.coerce(body.values)
+    for section, keys in changes.items():
         data[section].update(keys)
     config.write_config(data)
     config.refresh()
@@ -118,7 +119,10 @@ async def post_config(body: ConfigPayload, request: Request):
     pipeline.apply_config(engines)
     pipeline.broadcast_config()
     pipeline.broadcast_wake(engines.wake)
-    log.info("settings saved via UI")
+    changed = ", ".join(
+        f"{section}.{key}" for section, keys in changes.items() for key in keys
+    ) or "no changes"
+    log.info("settings saved via UI: %s", changed, extra={"event": "config_change"})
     return {"ok": True, "values": config.effective_dict()}
 
 
@@ -126,8 +130,35 @@ async def post_config(body: ConfigPayload, request: Request):
 async def trigger_dream(request: Request):
     """Run an immediate dream pass for the local memory store."""
     engines = request.app.state.engines
-    summary = await asyncio.to_thread(engines.dream_scheduler.trigger)
-    return {"ok": True, "summary": summary}
+    record = await asyncio.to_thread(engines.dream_scheduler.trigger)
+    return {"ok": True, "summary": record.get("summary"), "dream": record}
+
+
+@app.get("/api/dreams")
+async def list_dreams(request: Request):
+    """Dream history, most recent first (T031)."""
+    return {"dreams": request.app.state.engines.dreams.list()}
+
+
+@app.delete("/api/dreams")
+async def clear_dreams(request: Request):
+    request.app.state.engines.dreams.clear()
+    log.info("dream history cleared", extra={"event": "dreams_clear"})
+    return {"ok": True}
+
+
+@app.get("/api/logs")
+async def list_logs(request: Request, level: str | None = None):
+    """The rolling system log (T030), newest last."""
+    return {"entries": request.app.state.engines.log_store.list(level=level)}
+
+
+@app.delete("/api/logs")
+async def clear_logs(request: Request):
+    """Clear the system log and the consoles' live tails."""
+    request.app.state.engines.log_store.clear()
+    log.info("system log cleared", extra={"event": "logs_clear"})
+    return {"ok": True}
 
 
 @app.post("/api/bench/stt")
@@ -170,6 +201,7 @@ async def add_memory(body: MemoryPayload, request: Request):
         fact = request.app.state.engines.memory.add(body.text, core=body.core)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    log.info("memory fact added: %r", fact["text"][:80], extra={"event": "memory_add"})
     return {"ok": True, "fact": fact}
 
 
@@ -184,6 +216,7 @@ async def update_memory(fact_id: str, body: MemoryPayload, request: Request):
         raise HTTPException(status_code=404, detail="unknown memory fact") from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    log.info("memory fact updated: %s", fact_id, extra={"event": "memory_update"})
     return {"ok": True, "fact": fact}
 
 
@@ -193,6 +226,7 @@ async def delete_memory(fact_id: str, request: Request):
         request.app.state.engines.memory.delete(fact_id)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="unknown memory fact") from exc
+    log.info("memory fact deleted: %s", fact_id, extra={"event": "memory_delete"})
     return {"ok": True}
 
 
@@ -272,9 +306,11 @@ async def save_skill(name: str, body: SkillPayload):
         raise HTTPException(status_code=400, detail="skill name does not match the URL")
     try:
         action = _skills().save(body.name, body.description, body.instructions)
-        return {"ok": True, "action": action, "name": body.name.strip().lower()}
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    name = body.name.strip().lower()
+    log.info("skill %s via UI", action, extra={"event": "skill_update", "skill": name})
+    return {"ok": True, "action": action, "name": name}
 
 
 @app.delete("/api/skills/{name}")
@@ -285,6 +321,7 @@ async def delete_skill(name: str):
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    log.info("skill deleted: %s", name, extra={"event": "skill_delete"})
     return {"ok": True}
 
 
@@ -307,7 +344,10 @@ async def upload_voice(request: Request, file: UploadFile, name: str = Form("voi
     # model load can never hold the process open at shutdown.
     threading.Thread(target=engines.tts.prime, args=(slug,), daemon=True).start()
     pipeline.broadcast_config()
-    log.info("voice %r uploaded (%.1fs) and made active", slug, dur)
+    log.info(
+        "voice %r uploaded (%.1fs) and made active", slug, dur,
+        extra={"event": "voice_upload"},
+    )
     return {"ok": True, "voice": slug, "duration_s": round(dur, 2)}
 
 

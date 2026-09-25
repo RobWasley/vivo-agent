@@ -13,7 +13,7 @@ model = "qwen3.8-27b"
 # Let the model reason before answering. Adds latency but improves answers, especially with tools. vivo speaks filler phrases while it thinks.
 thinking = true
 # Generation budget per reply (thinking + answer together). Too low truncates answers; too high wastes latency.
-max_tokens = 3008
+max_tokens = 4096
 
 [persona]
 # Persona & prompt
@@ -130,9 +130,11 @@ goodnight = "Okay, I'll go quiet now. Wake me if you need anything else."
 [memory]
 # Conversation memory
 # Once the conversation history grows past this, older turns are summarised to keep the context small.
-compact_after_chars = 12000
+compact_after_chars = 65000
+# Token-based compaction threshold. 0 disables it (the character threshold decides). Useful when the model's context is measured in tokens.
+compact_after_tokens = 0
 # How many recent turns stay verbatim during compaction.
-keep_recent_turns = 4
+keep_recent_turns = 10
 # How often the background pass reviews local memory and keeps only high-value facts.
 dream_interval_s = 3600
 

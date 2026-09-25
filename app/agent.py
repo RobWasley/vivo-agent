@@ -9,10 +9,12 @@
   loop re-calls the model; tool exceptions become model-visible error text
 - `reply()` accepts prior conversation history (see app/conversation.py)
 - `summarize()` is a non-streaming helper for conversation compaction
+- `dream_pass()` is a non-streaming LLM memory-consolidation pass (dreaming)
 """
 from __future__ import annotations
 
 import json
+import re
 from concurrent.futures import ThreadPoolExecutor
 from typing import Dict, Iterator, List, Optional
 
@@ -20,8 +22,26 @@ import httpx
 
 DEFAULT_MAX_TOKENS = 300
 DEFAULT_MAX_TOOL_ROUNDS = 8
-SUMMARY_MAX_TOKENS = 300
+SUMMARY_MAX_TOKENS = 200
+DREAM_MAX_TOKENS = 600
 DEFAULT_TOOL_RETRIES = 2
+
+DREAM_PROMPT = (
+    "You are vivo's memory consolidator. You are given the memory archive and "
+    "the facts it considers most worth keeping. Return a JSON object with "
+    "exactly these keys:\n"
+    '- "summary": one short paragraph (2-4 sentences) of what matters most '
+    "about this person and their projects right now.\n"
+    '- "new_facts": a list of 0-5 short factual sentences (each under 200 '
+    "characters) implied by the archive but not yet stored as facts. Only "
+    "genuinely new, durable facts; no duplicates of existing facts, no "
+    "transient reminders or task output.\n"
+    '- "connections": a list of 0-5 short sentences linking facts to each '
+    "other (shared projects, people, or places).\n"
+    '- "pruned": a list of fact ids that are stale, contradicted, or low '
+    "value and can be deleted. Never list a fact marked (core).\n"
+    "Reply with the JSON object only: no markdown fences, no commentary."
+)
 
 
 class ToolRound:
@@ -249,3 +269,72 @@ class Agent:
         r = self.client.post(f"{self.base_url}/chat/completions", json=payload)
         r.raise_for_status()
         return (r.json()["choices"][0]["message"].get("content") or "").strip()
+
+    def dream_pass(self, archive_text: str, candidates: List[dict]) -> dict:
+        """Non-streaming LLM dream over the memory archive.
+
+        Returns {"summary", "new_facts", "connections", "pruned"}. Unparseable
+        output degrades to empty lists (and the raw text as summary) instead
+        of raising, so a chatty model can never kill a dream pass."""
+        cand_lines = "\n".join(
+            f'- {item["text"]} (id: {item["id"]})'
+            + (" (core)" if item.get("core") else "")
+            for item in candidates
+        ) or "(no saved facts yet)"
+        payload = {
+            "model": self.model,
+            "messages": [
+                {"role": "system", "content": DREAM_PROMPT},
+                {
+                    "role": "user",
+                    "content": (
+                        f"Memory archive:\n{archive_text}\n\n"
+                        f"Candidates to keep or prune:\n{cand_lines}"
+                    ),
+                },
+            ],
+            "stream": False,
+            "max_tokens": DREAM_MAX_TOKENS,
+            "chat_template_kwargs": {"enable_thinking": False},
+        }
+        r = self.client.post(f"{self.base_url}/chat/completions", json=payload)
+        r.raise_for_status()
+        content = (r.json()["choices"][0]["message"].get("content") or "").strip()
+        return parse_dream_response(content)
+
+
+def parse_dream_response(content: str) -> dict:
+    """Extract the dream JSON object from model output, tolerating fences and
+    surrounding commentary. Missing or broken output degrades gracefully."""
+    text = (content or "").strip()
+    if text.startswith("```"):
+        text = re.sub(r"^```[a-zA-Z]*\s*", "", text)
+        text = re.sub(r"\s*```$", "", text)
+    start, end = text.find("{"), text.rfind("}")
+    raw = None
+    if start != -1 and end > start:
+        try:
+            raw = json.loads(text[start : end + 1])
+        except json.JSONDecodeError:
+            raw = None
+    if not isinstance(raw, dict):
+        return {
+            "summary": text[:500],
+            "new_facts": [],
+            "connections": [],
+            "pruned": [],
+        }
+
+    def as_list(value) -> List[str]:
+        if isinstance(value, list):
+            return [str(v).strip() for v in value if str(v).strip()]
+        if isinstance(value, str) and value.strip():
+            return [value.strip()]
+        return []
+
+    return {
+        "summary": str(raw.get("summary") or "").strip(),
+        "new_facts": as_list(raw.get("new_facts"))[:10],
+        "connections": as_list(raw.get("connections"))[:10],
+        "pruned": as_list(raw.get("pruned"))[:20],
+    }

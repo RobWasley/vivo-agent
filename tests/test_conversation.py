@@ -110,3 +110,99 @@ def test_maybe_compact_runs_in_background():
         time.sleep(0.05)
     assert c.summary == "bg summary"
     assert len(c.turns) == 2
+
+
+# -- token threshold, callback and guardrails (T026/T027) ---------------------
+
+
+def test_token_threshold_triggers_compaction():
+    c = Conversation(compact_after_chars=10**6, compact_after_tokens=20)
+    for i in range(10):
+        c.add_turn(f"user {i} " + "word " * 10, f"assistant {i} " + "word " * 10)
+    assert c.size_chars() < 10**6
+    assert c.size_tokens() > 20
+    assert c.needs_compaction()
+    assert c.compact(lambda m: "S") is True
+    assert c.summary == "S"
+
+
+def test_token_threshold_disabled_by_default():
+    c = Conversation(compact_after_chars=10**6)
+    for i in range(10):
+        c.add_turn(f"user {i} " + "word " * 10, f"assistant {i} " + "word " * 10)
+    assert not c.needs_compaction()
+
+
+def test_compact_reports_through_on_compact():
+    events = []
+    c = Conversation(
+        compact_after_chars=10, keep_recent_turns=2,
+        on_compact=lambda s, b, a: events.append((s, b, a)),
+    )
+    for i in range(5):
+        c.add_turn(f"u{i}" + "x" * 10, f"a{i}" + "y" * 10)
+    assert c.compact(lambda m: "S") is True
+    assert events == [("S", 5, 2)]
+
+
+def test_summary_is_hard_capped():
+    c = Conversation(compact_after_chars=10, keep_recent_turns=2)
+    for i in range(3):
+        c.add_turn(f"u{i}" + "x" * 10, f"a{i}" + "y" * 10)
+    c.compact(lambda m: "s" * 2000)
+    assert c.summary == "s" * 500
+
+
+def test_checkpoint_resets_periodically(monkeypatch):
+    import app.conversation as conv
+
+    monkeypatch.setattr(conv, "RESET_EVERY", 2)
+    folded = []
+
+    def summarize(messages):
+        folded.append(any("Previous summary:" in m["content"] for m in messages))
+        return f"S{len(folded)}"
+
+    c = Conversation(compact_after_chars=10, keep_recent_turns=1)
+    for _ in range(3):
+        c.add_turn("u" + "x" * 10, "y" * 10)
+    c.compact(summarize)
+    c.add_turn("u" + "x" * 10, "y" * 10)
+    c.add_turn("u" + "x" * 10, "y" * 10)
+    c.compact(summarize)  # 2nd: the reset pass, no folding
+    c.add_turn("u" + "x" * 10, "y" * 10)
+    c.add_turn("u" + "x" * 10, "y" * 10)
+    c.compact(summarize)  # 3rd: folds the previous summary in
+    assert folded == [False, False, True]
+
+
+def test_session_store_forwards_compaction(tmp_path):
+    from app.conversation import SessionStore
+
+    events = []
+    store = SessionStore(
+        data_dir=str(tmp_path),
+        compact_after_chars=10,
+        keep_recent_turns=2,
+        on_compact=lambda sid, s, b, a: events.append((sid, s, b, a)),
+    )
+    sid = store.active_id
+    conv = store.conversation_for(sid)
+    for i in range(5):
+        conv.add_turn(f"u{i}" + "x" * 10, f"a{i}" + "y" * 10)
+    assert conv.compact(lambda m: "S") is True
+    assert events == [(sid, "S", 5, 2)]
+
+
+def test_set_limits_applies_token_threshold_to_loaded_sessions(tmp_path):
+    from app.conversation import SessionStore
+
+    store = SessionStore(
+        data_dir=str(tmp_path), compact_after_chars=10**6, keep_recent_turns=2
+    )
+    conv = store.conversation_for(store.active_id)
+    for i in range(10):
+        conv.add_turn(f"user {i} " + "word " * 10, f"assistant {i} " + "word " * 10)
+    assert not conv.needs_compaction()
+    store.set_limits(10**6, 2, compact_after_tokens=20)
+    assert conv.needs_compaction()

@@ -117,7 +117,8 @@ import numpy as np
 from app import config, shell, tools
 from app.agent import Agent, ReasoningDelta, ToolRound
 from app.conversation import SessionStore
-from app.memory import MemoryStore, DreamScheduler
+from app.logging_store import LogStore, VivoLogHandler
+from app.memory import MemoryStore, DreamScheduler, DreamStore
 from app.reminders import ReminderScheduler, ReminderStore, get_default_scheduler, reminder_message
 from app.skills import SkillStore
 from app.stt import STT
@@ -411,18 +412,20 @@ class Engines:
     """Shared, expensive engine singletons (one per process)."""
 
     def __init__(self) -> None:
+        # System log (T030): bridge every vivo.* log record into a rolling
+        # buffer and forward new entries to the open consoles.
+        self.log_store = LogStore(
+            path=os.path.join(config.DATA_DIR, "log.json"),
+            on_entry=broadcast_log_entry,
+        )
+        logging.getLogger("vivo").addHandler(VivoLogHandler(self.log_store))
         self.memory = MemoryStore(path=os.path.join(config.DATA_DIR, "memory.md"))
         self.skills = SkillStore(path=os.path.join(config.DATA_DIR, "skills"))
         self.reminders = ReminderStore(path=os.path.join(config.DATA_DIR, "reminders.json"))
         self.reminder_scheduler = get_default_scheduler(on_due=self._handle_due_reminder)
         self.reminders = self.reminder_scheduler.store
-        self.dream_scheduler = DreamScheduler(
-            self.memory,
-            interval_seconds=config.DREAM_INTERVAL_S,
-            on_state=self._handle_dream_state,
-        )
+        self.dreams = DreamStore(path=os.path.join(config.DATA_DIR, "dreams.json"))
         self.reminder_scheduler.start()
-        self.dream_scheduler.start()
         self.stt = STT(
             model_size=config.STT_MODEL,
             compute_type=config.STT_COMPUTE_TYPE,
@@ -448,10 +451,21 @@ class Engines:
             system_prompt=config.SYSTEM_PROMPT,
             user_profile=agent_context(self.memory, self.skills),
         )
+        self.dream_scheduler = DreamScheduler(
+            self.memory,
+            interval_seconds=config.DREAM_INTERVAL_S,
+            on_state=self._handle_dream_state,
+            agent=self.agent,
+            dreams=self.dreams,
+            on_complete=self._handle_dream_complete,
+        )
+        self.dream_scheduler.start()
         self.sessions = SessionStore(
             data_dir=config.DATA_DIR,
             compact_after_chars=config.COMPACT_AFTER_CHARS,
             keep_recent_turns=config.KEEP_RECENT_TURNS,
+            compact_after_tokens=config.COMPACT_AFTER_TOKENS,
+            on_compact=self._handle_compaction,
         )
         self.wake = WakeState(
             config.WAKE_PHRASE, config.WAKE_END_PHRASES, config.WAKE_SESSION_TIMEOUT_S
@@ -487,9 +501,12 @@ class Engines:
         for session in targets:
             self._deliver_reminder(session, payload, audio)
         if not targets:
-            log.info("%s reminder fired with no open console: %s", response, spoken)
+            log.info(
+                "%s reminder fired with no open console: %s", response, spoken,
+                extra={"event": "reminder_fire"},
+            )
         else:
-            log.info("reminder fired: %s", spoken)
+            log.info("reminder fired: %s", spoken, extra={"event": "reminder_fire"})
 
     def _deliver_reminder(
         self, session: "VoiceSession", payload: dict, audio
@@ -608,13 +625,38 @@ class Engines:
             bench.mark("reply_done")
         bench.report(gen, sentences=n, queue_max=config.TTS_QUEUE_SIZE)
 
-    def _handle_dream_state(self, active: bool) -> None:
-        broadcast_dream_state(active)
+    def _handle_dream_state(self, active: bool, phase: str = "") -> None:
+        broadcast_dream_state(active, phase)
+
+    def _handle_dream_complete(self, record: dict) -> None:
+        new_facts = len(record.get("new_facts") or [])
+        connections = len(record.get("connections") or [])
+        pruned = len(record.get("pruned") or [])
+        log.info(
+            "dream complete: llm=%s new_facts=%d connections=%d pruned=%d",
+            record.get("llm"), new_facts, connections, pruned,
+            extra={"event": "dream_complete"},
+        )
+        broadcast_dream_complete(
+            record,
+            {"new_facts": new_facts, "connections": connections, "pruned": pruned},
+        )
+
+    def _handle_compaction(
+        self, session_id: str, summary: str, turns_before: int, turns_after: int
+    ) -> None:
+        log.info(
+            "compacted conversation %s: %d -> %d turns",
+            session_id, turns_before, turns_after,
+            extra={"event": "compaction", "session_id": session_id},
+        )
+        broadcast_compact(session_id, summary, turns_before, turns_after)
 
     def close(self) -> None:
         self.reminder_scheduler.stop()
         self.dream_scheduler.stop()
         self.agent.close()
+        self.log_store.flush()
 
 
 def apply_config(engines: Engines) -> None:
@@ -650,7 +692,8 @@ def apply_config(engines: Engines) -> None:
     s.language = config.STT_LANGUAGE
     s.beam_size = config.STT_BEAM_SIZE
     engines.sessions.set_limits(
-        config.COMPACT_AFTER_CHARS, config.KEEP_RECENT_TURNS
+        config.COMPACT_AFTER_CHARS, config.KEEP_RECENT_TURNS,
+        config.COMPACT_AFTER_TOKENS,
     )
     if hasattr(engines, "dream_scheduler") and config.DREAM_INTERVAL_S > 0:
         engines.dream_scheduler.interval_seconds = config.DREAM_INTERVAL_S
@@ -1017,7 +1060,7 @@ def _handle_utterance(
                 wake_prefix = config.WAKE_ACK
             else:
                 fixed_reply = config.WAKE_ACK
-            log.info("woken by %r", text[:100])
+            log.info("woken by %r", text[:100], extra={"event": "wake_success"})
         elif wake.active:
             ended = wake.match_end(text)
             if ended is not None:
@@ -1025,7 +1068,7 @@ def _handle_utterance(
                 broadcast_wake(wake)
                 fixed_reply = config.WAKE_GOODNIGHT
                 prompt_text = None
-                log.info("session ended by %r", ended)
+                log.info("session ended by %r", ended, extra={"event": "wake_expire"})
             else:
                 wake.touch()
         session.send({"type": "transcript", "text": text})
@@ -1111,7 +1154,7 @@ def _handle_utterance(
                 enqueue(sentence)
         bench.mark("generation_complete")
     except Exception as e:  # noqa: BLE001 - surface pipeline errors to the client
-        log.exception("pipeline error")
+        log.exception("pipeline error", extra={"event": "pipeline_error"})
         if session.alive(gen):
             session.send({"type": "error", "message": f"{type(e).__name__}: {e}"})
     finally:
@@ -1249,7 +1292,7 @@ def _handle_text_utterance(
                 enqueue(sentence)
         bench.mark("generation_complete")
     except Exception as e:  # noqa: BLE001 - surface pipeline errors to the client
-        log.exception("pipeline error")
+        log.exception("pipeline error", extra={"event": "pipeline_error"})
         if session.alive(gen):
             session.send({"type": "error", "message": f"{type(e).__name__}: {e}"})
     finally:
@@ -1329,7 +1372,7 @@ def _wake_tick(session: VoiceSession) -> None:
     if not wake.claim_sleep():
         return
     broadcast_wake(wake)
-    log.info("wake session expired (idle)")
+    log.info("wake session expired (idle)", extra={"event": "wake_expire"})
     _speak_goodnight(session.engines)
 
 
@@ -1406,9 +1449,50 @@ def broadcast_wake(wake: WakeState) -> None:
             s.send(msg)
 
 
-def broadcast_dream_state(active: bool) -> None:
-    """Report whether the background dream pass is running."""
+def broadcast_dream_state(active: bool, phase: str = "") -> None:
+    """Report whether the background dream pass is running (and which phase)."""
     msg = {"type": "dream", "active": bool(active)}
+    if phase:
+        msg["phase"] = phase
+    for s in list(_ACTIVE):
+        if not s.closed:
+            s.send(msg)
+
+
+def broadcast_dream_complete(record: dict, stats: dict) -> None:
+    """Report a finished dream pass (summary, new facts, connections, prunes)."""
+    msg = {
+        "type": "dream",
+        "active": False,
+        "phase": "complete",
+        "summary": record.get("summary") or "",
+        "llm": bool(record.get("llm")),
+        "stats": stats,
+    }
+    for s in list(_ACTIVE):
+        if not s.closed:
+            s.send(msg)
+
+
+def broadcast_compact(
+    session_id: str, summary: str, turns_before: int, turns_after: int
+) -> None:
+    """Tell the consoles a conversation's history was compacted."""
+    msg = {
+        "type": "compact",
+        "session_id": session_id,
+        "summary": summary,
+        "turns_before": turns_before,
+        "turns_after": turns_after,
+    }
+    for s in list(_ACTIVE):
+        if not s.closed:
+            s.send(msg)
+
+
+def broadcast_log_entry(entry: dict) -> None:
+    """Forward a new system-log entry to every open console."""
+    msg = {"type": "log_entry", "entry": entry}
     for s in list(_ACTIVE):
         if not s.closed:
             s.send(msg)
@@ -1452,10 +1536,12 @@ async def serve_session(ws, engines: Engines) -> None:
                     session.session_id = new_id
                     session.conversation = engines.sessions.conversation_for(new_id)
                     session.send({"type": "session", "id": new_id, "created": True})
-                    log.info("new session %s", new_id)
+                    log.info("new session %s", new_id, extra={"event": "session_create"})
                 elif session.switch_session(target):
                     engines.sessions.set_active(target)
                     session.send({"type": "session", "id": target})
+                    log.info("switched session -> %s", target,
+                             extra={"event": "session_switch"})
                 else:
                     session.send({"type": "error", "message": f"unknown session: {target}"})
             elif kind == "wake":
@@ -1463,7 +1549,7 @@ async def serve_session(ws, engines: Engines) -> None:
                 # spoken phrase). No-op when already awake or disabled.
                 if engines.wake.enabled and engines.wake.wake():
                     broadcast_wake(engines.wake)
-                    log.info("manual wake")
+                    log.info("manual wake", extra={"event": "wake_success"})
             elif kind == "flush":
                 for ev in session.vad.flush():
                     if ev.type == "start":

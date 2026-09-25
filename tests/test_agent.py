@@ -373,3 +373,73 @@ def test_reasoning_across_tool_rounds_stays_separate():
     ]
     assert sum(1 for i in items if isinstance(i, ToolRound)) == 1
     assert [i for i in items if isinstance(i, str)] == ["done"]
+
+
+# -- dreaming (T031) ----------------------------------------------------------
+
+
+def test_parse_dream_response_full_json():
+    from app.agent import parse_dream_response
+
+    out = parse_dream_response(
+        'Sure: {"summary": "s", "new_facts": ["a", "b"], '
+        '"connections": ["c"], "pruned": ["id1"]}'
+    )
+    assert out == {
+        "summary": "s",
+        "new_facts": ["a", "b"],
+        "connections": ["c"],
+        "pruned": ["id1"],
+    }
+
+
+def test_parse_dream_response_fenced_and_stringy():
+    from app.agent import parse_dream_response
+
+    out = parse_dream_response(
+        '```json\n{"summary": "s", "new_facts": "just one", "pruned": "id9"}\n```'
+    )
+    assert out["summary"] == "s"
+    assert out["new_facts"] == ["just one"]  # a bare string becomes a one-item list
+    assert out["pruned"] == ["id9"]
+
+
+def test_parse_dream_response_garbage_degrades_to_summary():
+    from app.agent import parse_dream_response
+
+    out = parse_dream_response("The model refused to output JSON.")
+    assert out["summary"] == "The model refused to output JSON."
+    assert out["new_facts"] == [] and out["connections"] == [] and out["pruned"] == []
+    assert len(parse_dream_response("x" * 900)["summary"]) == 500
+    assert parse_dream_response(None)["summary"] == ""
+
+
+def test_parse_dream_response_caps_lists():
+    from app.agent import parse_dream_response
+
+    out = parse_dream_response(json.dumps({
+        "summary": "s",
+        "new_facts": [f"f{i}" for i in range(15)],
+        "connections": [f"c{i}" for i in range(15)],
+        "pruned": [f"p{i}" for i in range(25)],
+    }))
+    assert len(out["new_facts"]) == 10
+    assert len(out["connections"]) == 10
+    assert len(out["pruned"]) == 20
+
+
+def test_dream_pass_posts_non_streaming_and_parses():
+    from app.agent import DREAM_MAX_TOKENS
+
+    client = FakeClient(post_body={
+        "choices": [{"message": {"content": '{"summary": "s", "new_facts": ["a"]}'}}]
+    })
+    agent = Agent("http://x/v1", "m", "P", client=client)
+    out = agent.dream_pass("archive text", [{"id": "i1", "text": "t", "core": True}])
+
+    assert out["summary"] == "s" and out["new_facts"] == ["a"]
+    payload = client.payloads[0]
+    assert payload["stream"] is False
+    assert payload["max_tokens"] == DREAM_MAX_TOKENS
+    user = payload["messages"][1]["content"]
+    assert "archive text" in user and "i1" in user and "(core)" in user

@@ -44,6 +44,7 @@ def test_missing_file_uses_built_in_defaults(cfg, tmp_path):
     assert cfg.USER_TIMEZONE == ""
     assert cfg.USER_UNITS == "metric"
     assert cfg.UI_CAPTION_LINGER_S == 8.0
+    assert cfg.MAX_CONTINUATIONS == 3
     assert cfg.FILLER_PHRASES == (
         "Let me think about that.",
         "Working on it.",
@@ -111,6 +112,7 @@ dream_interval_s = 7200
 
 [agent]
 max_tool_rounds = 5
+max_continuations = 7
 exec_timeout_s = 30
 """)
     assert cfg.LLM_MODEL == "custom-9b"
@@ -148,6 +150,7 @@ exec_timeout_s = 30
     assert cfg.DREAM_INTERVAL_S == 7200
     assert cfg.MAX_TOOL_ROUNDS == 5
     assert cfg.TOOL_RETRIES == 2
+    assert cfg.MAX_CONTINUATIONS == 7
     assert cfg.EXEC_TIMEOUT == 30
     # untouched keys keep their defaults
     assert cfg.EXEC_MAX_TIMEOUT == 120
@@ -157,9 +160,11 @@ def test_env_overrides_file(cfg, tmp_path):
     _write(tmp_path, '[llm]\nmodel = "custom-9b"\nthinking = true\n')
     os.environ["LLM_MODEL"] = "env-model"
     os.environ["LLM_THINKING"] = "0"
+    os.environ["MAX_CONTINUATIONS"] = "5"
     importlib.reload(config_mod)
     assert cfg.LLM_MODEL == "env-model"
     assert cfg.LLM_THINKING is False
+    assert cfg.MAX_CONTINUATIONS == 5
 
 
 def test_empty_env_counts_as_unset(cfg, tmp_path):

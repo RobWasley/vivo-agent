@@ -71,7 +71,7 @@ class FakeAgent:
         self.deltas = deltas
         self.token_delay = token_delay
 
-    def reply(self, text, execute, history=None):
+    def reply(self, text, execute, history=None, resume_messages=None):
         for d in self.deltas:
             if self.token_delay:
                 time.sleep(self.token_delay)

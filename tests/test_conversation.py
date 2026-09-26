@@ -206,3 +206,71 @@ def test_set_limits_applies_token_threshold_to_loaded_sessions(tmp_path):
     assert not conv.needs_compaction()
     store.set_limits(10**6, 2, compact_after_tokens=20)
     assert conv.needs_compaction()
+
+
+# -- finalised tool-task state + 'continue' resolution -------------------------
+
+
+def test_tool_state_roundtrip():
+    c = Conversation()
+    assert c.tool_state is None
+    msgs = [{"role": "user", "content": "u"}, {"role": "assistant", "content": "a"}]
+    c.set_tool_state(msgs, 1)
+    assert c.tool_state == {"messages": list(msgs), "continuations": 1}
+    c.clear_tool_state()
+    assert c.tool_state is None
+
+
+def test_tool_state_not_persisted(tmp_path):
+    p = str(tmp_path / "conv.json")
+    c = Conversation(data_path=p)
+    c.set_tool_state([{"role": "user", "content": "u"}], 2)
+    assert Conversation(data_path=p).tool_state is None
+
+
+def test_is_continue_variants():
+    from app.conversation import is_continue
+
+    for text in (
+        "continue", "Continue", " CONTINUE ", "continue.", "Continue?", "continue!"
+    ):
+        assert is_continue(text), text
+    for text in ("", "continue please", "keep going", "continue the song", "continues"):
+        assert not is_continue(text), text
+
+
+def test_resolve_continue_within_budget(monkeypatch):
+    from app import config
+    from app.conversation import resolve_continue
+
+    monkeypatch.setattr(config, "MAX_CONTINUATIONS", 2)
+    c = Conversation()
+    msgs = [{"role": "user", "content": "task"}]
+    c.set_tool_state(msgs, 0)
+    resume, refusal = resolve_continue(c, "continue")
+    assert resume == msgs and refusal is None
+    assert c.tool_state["continuations"] == 1
+    resume, refusal = resolve_continue(c, "Continue.")
+    assert resume == msgs and refusal is None
+    assert c.tool_state["continuations"] == 2
+    # budget exhausted: fixed refusal, state cleared
+    resume, refusal = resolve_continue(c, "continue")
+    assert resume is None and refusal is not None
+    assert c.tool_state is None
+
+
+def test_resolve_continue_without_pending_state():
+    from app.conversation import resolve_continue
+
+    c = Conversation()
+    assert resolve_continue(c, "continue") == (None, None)
+    assert c.tool_state is None
+
+
+def test_resolve_continue_new_utterance_clears_stale_state():
+    from app.conversation import resolve_continue
+
+    c = Conversation()
+    c.set_tool_state([{"role": "user", "content": "task"}], 0)
+    assert resolve_continue(c, "what's the weather?") == (None, None)
+    assert c.tool_state is None

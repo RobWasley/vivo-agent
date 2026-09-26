@@ -72,7 +72,7 @@ class ThinkingAgent:
         self.answer = answer
         self.tick = tick
 
-    def reply(self, text, execute, history=None):
+    def reply(self, text, execute, history=None, resume_messages=None):
         t_end = time.monotonic() + self.think_secs
         while time.monotonic() < t_end:
             time.sleep(self.tick)

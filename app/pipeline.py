@@ -35,7 +35,8 @@ Protocol (JSON text frames unless noted):
     binary            int16 mono 16 kHz PCM (any frame size)
     {"type":"barge_in"}   cancel the active reply (stop speaking, abort LLM)
     {"type":"flush"}      force-close an in-progress utterance
-    {"type":"wake"}       manually wake vivo (T024)
+    {"type":"wake"}       manually wake vivo (T024); in-progress utterances
+                           are dropped — that speech predates the wake
     {"type":"session"}           start a new session, bind this connection to it
     {"type":"session","id":str}  bind this connection to an existing session
     {"type":"ping"}       -> {"type":"pong"}
@@ -95,9 +96,14 @@ every utterance is still transcribed, but only one containing the phrase
 reaches the LLM (the rest is dropped: no transcript frame, no reply, nothing
 stored). The text after the phrase is answered as a normal request; a
 phrase-only utterance gets a spoken ack instead of an LLM round trip. The
-shared Engines.wake state ends the session on an end phrase or when the idle
-timeout elapses (checked from the audio path, never while a reply is in
-progress), speaking a goodnight. An empty phrase disables the feature.
+gate reads the awake/asleep state at *capture* time, so a manual wake
+pressed while STT is still running never pulls the pre-wake utterance in.
+The shared Engines.wake state ends the session on an end phrase or when the
+idle timeout elapses (checked from the audio path, never while a reply is in
+progress), speaking a goodnight — but only when audio has been flowing
+without a long gap; a session that goes quiet while the mic is off or the
+tab is closed sleeps silently, so a fresh mic never hears a goodnight from a
+previous session. An empty phrase disables the feature.
 """
 
 from __future__ import annotations
@@ -115,8 +121,8 @@ import time
 import numpy as np
 
 from app import config, shell, tools
-from app.agent import Agent, ReasoningDelta, ToolRound
-from app.conversation import SessionStore
+from app.agent import Agent, Finalised, ReasoningDelta, ToolRound
+from app.conversation import SessionStore, resolve_continue
 from app.logging_store import LogStore, VivoLogHandler
 from app.memory import MemoryStore, DreamScheduler, DreamStore
 from app.reminders import ReminderScheduler, ReminderStore, get_default_scheduler, reminder_message
@@ -134,6 +140,13 @@ _TTS_DONE = None  # queue sentinel: no more sentences will be enqueued
 # single synthesis stays short and the phrase reads naturally aloud.
 # Customisable via vivo.toml [filler] phrases / THINK_FILLER_PHRASES.
 FILLER_PHRASES = config.FILLER_PHRASES
+
+# The idle-timeout goodnight is spoken only when audio has been flowing
+# without a gap longer than this (the user is present and listening). A
+# longer gap means the mic was muted or the tab closed while the session
+# went quiet, so nobody heard it go: the session is then dropped silently
+# instead of greeting a fresh mic with a goodnight from a previous session.
+_GOODNIGHT_MAX_GAP_S = 5.0
 
 
 def user_profile() -> str:
@@ -549,7 +562,7 @@ class Engines:
             for item in self.agent.reply(
                 text, execute, history=conv.messages() if conv is not None else None
             ):
-                if isinstance(item, (ReasoningDelta, ToolRound)):
+                if isinstance(item, (ReasoningDelta, ToolRound, Finalised)):
                     continue
                 chunks.append(item)
             answer = "".join(chunks).strip()
@@ -760,6 +773,7 @@ class VoiceSession:
         self.closed = False
         self.tts_queue: queue_mod.Queue | None = None  # current reply's TTS queue
         self.barge_mono: dict[int, float] = {}         # gen -> monotonic barge-in time
+        self.last_audio_at: float | None = None        # last mic frame (gap check)
 
     def alive(self, gen: int) -> bool:
         """True while the reply of generation `gen` is still current."""
@@ -938,9 +952,13 @@ class VoiceSession:
             gen = self.generation
             self.tts_queue = queue_mod.Queue(maxsize=config.TTS_QUEUE_SIZE)
             q = self.tts_queue
+        # Snapshot the wake state at capture time: a manual wake pressed while
+        # STT is still running must not pull this pre-wake utterance in.
+        asleep = self.engines.wake.enabled and not self.engines.wake.active
         self.send({"type": "end"})
         threading.Thread(
-            target=_handle_utterance, args=(samples, self, gen, q), daemon=True
+            target=_handle_utterance, args=(samples, self, gen, q, asleep),
+            daemon=True,
         ).start()
         return True
 
@@ -1017,7 +1035,8 @@ def _tts_worker(
 
 
 def _handle_utterance(
-    samples: np.ndarray, session: VoiceSession, gen: int, q: "queue_mod.Queue"
+    samples: np.ndarray, session: VoiceSession, gen: int, q: "queue_mod.Queue",
+    asleep: bool = False,
 ) -> None:
     engines = session.engines
     # Pin this utterance's conversation now: a mid-reply session switch must
@@ -1033,24 +1052,31 @@ def _handle_utterance(
     in_thinking = False
     think_started: float | None = None
     thinking_secs = 0.0
+    finalised: Finalised | None = None
+    resume_messages: list | None = None
+    llm_ran = False
     try:
         text = engines.stt.transcribe(samples)
         bench.mark("stt_end")
-        log.info("stt %.2fs: %r", bench.events["stt_end"], text[:100])
         if not session.alive(gen):
             return
-        # Wake-phrase gate (T024): while asleep, only an utterance containing
-        # the phrase is processed; the text after the phrase is the prompt
-        # (with the ack spoken first). While awake, an end phrase closes the
-        # session.
+        # Wake-phrase gate (T024): `asleep` is the state at *capture* time
+        # (start_utterance), not now — a manual wake pressed while STT is
+        # still running must not process this pre-wake utterance. While
+        # asleep, only an utterance containing the phrase is processed; the
+        # text after the phrase is the prompt (with the ack spoken first).
+        # While awake, an end phrase closes the session. Dropped utterances
+        # return before the INFO stt line below, so their transcript never
+        # reaches the system log.
         wake = engines.wake
         fixed_reply: str | None = None   # spoken as-is, no LLM (ack / goodnight)
         wake_prefix: str | None = None   # spoken before the LLM reply (ack)
         prompt_text: str | None = text
-        if wake.enabled and not wake.active:
+        if asleep:
             m = wake.match_wake(text)
             if m is None:
-                log.debug("asleep: ignored %r", text[:100])
+                log.debug("asleep: ignored %r (stt %.2fs)",
+                          text[:100], bench.events["stt_end"])
                 return
             wake.wake()
             broadcast_wake(wake)
@@ -1071,6 +1097,7 @@ def _handle_utterance(
                 log.info("session ended by %r", ended, extra={"event": "wake_expire"})
             else:
                 wake.touch()
+        log.info("stt %.2fs: %r", bench.events["stt_end"], text[:100])
         session.send({"type": "transcript", "text": text})
         if not text.strip():
             return
@@ -1099,6 +1126,16 @@ def _handle_utterance(
                 session.send(event)
             return result
 
+        # 'continue' picks a finalised tool task back up with a fresh tool
+        # budget, within the configured continuation cap; any other utterance
+        # drops a stale pending state.
+        if fixed_reply is None and prompt_text is not None:
+            resume_messages, refusal = resolve_continue(conv, prompt_text)
+            if refusal is not None:
+                fixed_reply = refusal
+            else:
+                llm_ran = True
+
         # Message boundaries for the client transcript: the first delta of a
         # new spoken message carries start=True (a tool round closes the
         # current one, so the text after it starts a fresh message).
@@ -1121,7 +1158,10 @@ def _handle_utterance(
                 for sentence in list(chunker.add(wake_prefix)) + chunker.flush():
                     enqueue(sentence)
             for item in engines.agent.reply(
-                prompt_text, execute, history=conv.messages()
+                prompt_text,
+                execute,
+                history=conv.messages(),
+                resume_messages=resume_messages,
             ):
                 if not session.alive(gen):
                     break
@@ -1138,6 +1178,9 @@ def _handle_utterance(
                     thinking_secs += time.monotonic() - think_started
                 if isinstance(item, ToolRound):
                     msg_open = False
+                    continue
+                if isinstance(item, Finalised):
+                    finalised = item
                     continue
                 if "llm_first_token" not in bench.events:
                     bench.mark("llm_first_token")
@@ -1178,6 +1221,13 @@ def _handle_utterance(
         answer = "".join(spoken).strip()
         if answer:
             conv.add_turn(text, answer)
+        if llm_ran:
+            if finalised is not None:
+                # task ended early: keep it pending for a possible 'continue'
+                count = (conv.tool_state or {}).get("continuations", 0)
+                conv.set_tool_state(finalised.messages, count)
+            else:
+                conv.clear_tool_state()
         conv.maybe_compact(engines.agent.summarize)
         if is_current and not session.closed:
             session.send({"type": "reply_done"})
@@ -1224,6 +1274,9 @@ def _handle_text_utterance(
     think_started: float | None = None
     thinking_secs = 0.0
     chunker: SentenceChunker | None = None
+    finalised: Finalised | None = None
+    resume_messages: list | None = None
+    llm_ran = False
     try:
         session.send({"type": "transcript", "text": text})
         if not text.strip():
@@ -1255,9 +1308,22 @@ def _handle_text_utterance(
                 q.put((n_sentences, sentence, "tts"))
                 bench.accumulate("llm_blocked_on_tts", time.monotonic() - t0)
 
+        resume_messages, refusal = resolve_continue(conv, text)
+        if refusal is not None:
+            # continuation budget exhausted: deterministic short reply, no LLM
+            spoken.append(refusal)
+            session.send({"type": "agent_text", "delta": refusal, "start": True})
+            if speech:
+                for sentence in list(chunker.add(refusal)) + chunker.flush():
+                    enqueue(sentence)
+            bench.mark("generation_complete")
+            return
+        llm_ran = True
         msg_open = False
         engines.agent.user_profile = agent_context(engines.memory, engines.skills)
-        for item in engines.agent.reply(text, execute, history=conv.messages()):
+        for item in engines.agent.reply(
+            text, execute, history=conv.messages(), resume_messages=resume_messages
+        ):
             if not session.alive(gen):
                 break
             if isinstance(item, ReasoningDelta):
@@ -1273,6 +1339,9 @@ def _handle_text_utterance(
                 thinking_secs += time.monotonic() - think_started
             if isinstance(item, ToolRound):
                 msg_open = False
+                continue
+            if isinstance(item, Finalised):
+                finalised = item
                 continue
             if "llm_first_token" not in bench.events:
                 bench.mark("llm_first_token")
@@ -1316,6 +1385,13 @@ def _handle_text_utterance(
         answer = "".join(spoken).strip()
         if answer:
             conv.add_turn(text, answer)
+        if llm_ran:
+            if finalised is not None:
+                # task ended early: keep it pending for a possible 'continue'
+                count = (conv.tool_state or {}).get("continuations", 0)
+                conv.set_tool_state(finalised.messages, count)
+            else:
+                conv.clear_tool_state()
         conv.maybe_compact(engines.agent.summarize)
         if is_current and not session.closed:
             session.send({"type": "reply_done"})
@@ -1345,7 +1421,10 @@ def _handle_text_utterance(
 
 
 def _on_audio(session: VoiceSession, data: bytes) -> None:
-    _wake_tick(session)
+    now = time.monotonic()
+    gap = None if session.last_audio_at is None else now - session.last_audio_at
+    session.last_audio_at = now
+    _wake_tick(session, gap)
     if len(data) < 2 or len(data) % 2:
         return
     pcm = np.frombuffer(data, dtype=np.int16).astype(np.float32) / 32768.0
@@ -1361,17 +1440,47 @@ def _on_audio(session: VoiceSession, data: bytes) -> None:
 _ACTIVE: set[VoiceSession] = set()
 
 
-def _wake_tick(session: VoiceSession) -> None:
+def manual_wake(engines: Engines) -> bool:
+    """Manual wake (UI button; also used by live tests to skip the spoken
+    phrase). No-op when already awake or disabled.
+
+    Any utterance still in progress on the VADs is dropped without an 'end'
+    event: that speech predates the wake, so only audio after the button may
+    be processed. The wake is global, so every open session is trimmed."""
+    if not engines.wake.enabled or not engines.wake.wake():
+        return False
+    for s in list(_ACTIVE):
+        if not s.closed:
+            s.vad.discard_in_progress()
+    broadcast_wake(engines.wake)
+    log.info("manual wake", extra={"event": "wake_success"})
+    return True
+
+
+def _wake_tick(session: VoiceSession, gap: float | None) -> None:
     """Wake-session idle timeout (T024), checked from the audio path so no
     timer thread is needed. Never fires while a reply is in progress; the
     clock was reset by the last exchange, so it fires right after a long
-    reply if the silence has lasted past the timeout."""
+    reply if the silence has lasted past the timeout.
+
+    `gap` is how long this connection went without audio before this frame
+    (None: its first frame ever). The goodnight is spoken only when the
+    audio has been flowing without a long gap — a session that went quiet
+    while the mic was off or the tab closed has no listener, so it sleeps
+    silently (the state is still broadcast to the consoles)."""
     wake = session.engines.wake
     if _any_reply_active():
         return
     if not wake.claim_sleep():
         return
     broadcast_wake(wake)
+    if gap is None or gap > _GOODNIGHT_MAX_GAP_S:
+        why = "new connection" if gap is None else f"no audio for {gap:.0f}s"
+        log.info(
+            "wake session expired (idle, stale: %s; goodnight suppressed)", why,
+            extra={"event": "wake_expire"},
+        )
+        return
     log.info("wake session expired (idle)", extra={"event": "wake_expire"})
     _speak_goodnight(session.engines)
 
@@ -1545,11 +1654,7 @@ async def serve_session(ws, engines: Engines) -> None:
                 else:
                     session.send({"type": "error", "message": f"unknown session: {target}"})
             elif kind == "wake":
-                # Manual wake (UI button; also used by live tests to skip the
-                # spoken phrase). No-op when already awake or disabled.
-                if engines.wake.enabled and engines.wake.wake():
-                    broadcast_wake(engines.wake)
-                    log.info("manual wake", extra={"event": "wake_success"})
+                manual_wake(engines)
             elif kind == "flush":
                 for ev in session.vad.flush():
                     if ev.type == "start":

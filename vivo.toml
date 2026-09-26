@@ -144,6 +144,8 @@ dream_interval_s = 3600
 max_tool_rounds = 8
 # Retry a clean language-model server error while processing a tool request. Retries stop once any reply text has streamed.
 tool_retries = 2
+# How many times a finalised task may be picked back up with 'continue' before vivo lets it go.
+max_continuations = 3
 # Default timeout for shell commands.
 exec_timeout_s = 60
 # Longest command timeout the model may request.

@@ -119,6 +119,28 @@ class VAD:
             self._pending_end = None
         return events
 
+    def discard_in_progress(self) -> bool:
+        """Drop the in-progress utterance without an 'end' event.
+
+        Used when a manual wake lands mid-utterance: the speech captured so
+        far predates the wake, so it must not reach the LLM. The cut is at
+        the last fully processed sample — the unprocessed tail is pre-wake
+        too, so it is dropped — and the model state (LSTM cells plus input
+        context) is reset, because a warm model still reports the first
+        post-cut silence windows as speech and would retrigger. The next
+        voiced window starts a fresh utterance; only audio after this call
+        is captured. True if one was dropped."""
+        if not self._in_speech:
+            return False
+        self._in_speech = False
+        self._pending_end = None
+        self._total += self._tail.size  # the tail is pre-wake: skip it
+        self._tail = np.zeros(0, dtype=np.float32)
+        self._prev_ctx = np.zeros(CONTEXT_SAMPLES, dtype=np.float32)
+        self._h = np.zeros_like(self._h)
+        self._c = np.zeros_like(self._c)
+        return True
+
     def _on_window(self, buf: np.ndarray, i: int, buf_start: int) -> list[VadEvent]:
         window = buf[i : i + WINDOW_SAMPLES]
         win_start = buf_start + i

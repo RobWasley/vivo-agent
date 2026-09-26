@@ -530,6 +530,17 @@ SCHEMA = {
                 "step": 1,
                 "attr": "TOOL_RETRIES",
             },
+            "max_continuations": {
+                "type": "int",
+                "label": "Max continuations",
+                "help": "How many times a finalised task may be picked back up with"
+                        " 'continue' before vivo lets it go.",
+                "apply": "now",
+                "min": 0,
+                "max": 10,
+                "step": 1,
+                "attr": "MAX_CONTINUATIONS",
+            },
             "exec_timeout_s": {
                 "type": "int",
                 "label": "Exec timeout (s)",

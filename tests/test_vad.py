@@ -110,5 +110,37 @@ def test_pause_beyond_reopen_window_still_splits():
     vad = VAD(min_silence_ms=400, reopen_ms=600, min_speech_ms=200)
     sig = np.concatenate([SPEECH, silence(1.4), SPEECH, silence(1.5)])
     ends = [e for e in run(vad, sig) if e.type == "end"]
-    assert len(ends) == 2, f"expected two segments, got {len(ends)}: {ends}"
+    assert len(ends) == 2, f"expected two segments, got {ends}"
     assert ends[1].end > ends[0].end
+
+
+def test_discard_in_progress_drops_pre_discard_speech():
+    # Speech in progress; a manual wake lands mid-utterance and drops it.
+    # The dropped part never finalizes; only audio after the discard starts
+    # a fresh utterance.
+    vad = VAD(min_silence_ms=400, speech_pad_ms=200, min_speech_ms=200, reopen_ms=0)
+    first, second = SPEECH[: int(1.0 * SR)], SPEECH[int(1.0 * SR) :]
+    events = run(vad, first)
+    assert [e.type for e in events] == ["start"], f"got {events}"
+    assert vad.discard_in_progress() is True
+    # silence after the discard: the dropped utterance never finalizes
+    assert run(vad, silence(1.0)) == []
+    # speech resumes: one fresh utterance, starting at the discard point
+    events = run(vad, np.concatenate([second, silence(1.0)]))
+    starts = [e for e in events if e.type == "start"]
+    ends = [e for e in events if e.type == "end"]
+    assert len(starts) == 1, f"got {events}"
+    assert len(ends) == 1, f"got {events}"
+    cut = len(first)  # sample index of the discard
+    assert ends[0].start * SR >= cut - 0.25 * SR  # at most the pad earlier
+    seg = ends[0].samples
+    assert seg is not None
+    assert len(second) - 0.3 * SR < len(seg) < len(second) + 0.5 * SR, (
+        f"segment {len(seg) / SR:.2f}s, tail {len(second) / SR:.2f}s"
+    )
+
+
+def test_discard_in_progress_noop_when_silent():
+    vad = VAD(min_silence_ms=400, min_speech_ms=200)
+    run(vad, silence(0.5))
+    assert vad.discard_in_progress() is False

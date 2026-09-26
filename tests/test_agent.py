@@ -5,7 +5,18 @@ import httpx
 import pytest
 
 from app import config, tools
-from app.agent import Agent, ReasoningDelta, ToolRound
+from app.agent import Agent, CONTINUE_PROMPT, Finalised, ReasoningDelta, ToolRound
+
+_DUMMY_TOOLS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "slow",
+            "description": "a test tool",
+            "parameters": {"type": "object"},
+        },
+    }
+]
 
 
 def _sse(*events):
@@ -259,14 +270,127 @@ def test_tool_calls_run_in_parallel_and_errors_are_feedback():
     assert tool_msgs[2]["content"].startswith("error: RuntimeError: kapow")
 
 
-def test_max_tool_rounds_stops_loop():
+def test_max_tool_rounds_finalises_without_tools():
     tool_round = _sse(_tool_calls_delta([("c1", "slow", "{}")]))
-    client = FakeClient(streams=[tool_round] * 10)
-    agent = Agent("http://x/v1", "m", "P", client=client, max_tool_rounds=2)
-    rounds = sum(1 for item in agent.reply("go", lambda n, a: "ok")
-                 if isinstance(item, ToolRound))
-    assert rounds == 2
-    assert len(client.payloads) == 3  # initial + 2 re-calls
+    # the budget-exhausted round makes two calls: one over-budget tool call
+    # (ignored) and the tools-disabled final answer
+    client = FakeClient(
+        streams=[tool_round] * 3 + [_sse(_text_delta("final answer"))]
+    )
+    agent = Agent(
+        "http://x/v1", "m", "P", client=client,
+        tools=_DUMMY_TOOLS, max_tool_rounds=2,
+    )
+    items = list(agent.reply("go", lambda n, a: "ok"))
+    assert sum(1 for i in items if isinstance(i, ToolRound)) == 2
+    # initial + 2 re-calls + one tools-disabled final answer
+    assert len(client.payloads) == 4
+    assert "tools" in client.payloads[0]
+    assert "tools" not in client.payloads[-1]
+    assert [i for i in items if isinstance(i, str)] == ["final answer"]
+    assert sum(1 for i in items if isinstance(i, Finalised)) == 1
+    # the final nudge never mentions tool internals (it is the last user
+    # message before the tools-disabled final answer)
+    nudge = [m for m in client.payloads[-1]["messages"] if m["role"] == "user"][-1]
+    low = nudge["content"].lower()
+    for word in ("tool", "budget", "round", "retry", "limit"):
+        assert word not in low, low
+
+
+def test_malformed_arguments_reported_and_retried():
+    client = FakeClient(
+        streams=[
+            _sse(_tool_calls_delta([("c1", "slow", "{not json")])),
+            _sse(_tool_calls_delta([("c2", "slow", '{"a": 1}')])),
+            _sse(_text_delta("done")),
+        ]
+    )
+    agent = Agent("http://x/v1", "m", "P", client=client, tools=_DUMMY_TOOLS)
+    executed = []
+
+    def execute(name, args):
+        executed.append((name, args))
+        return "ok"
+
+    items = list(agent.reply("go", execute))
+    # malformed arguments never reach the executor (not even as {})
+    assert executed == [("slow", {"a": 1})]
+    tool_msgs = [m for m in client.payloads[1]["messages"] if m["role"] == "tool"]
+    assert tool_msgs[0]["content"].startswith(
+        "error: slow got malformed arguments"
+    )
+    assert sum(1 for i in items if isinstance(i, ToolRound)) == 2
+    assert [i for i in items if isinstance(i, str)] == ["done"]
+    assert not any(isinstance(i, Finalised) for i in items)
+
+
+def test_malformed_arguments_retry_cap_finalises_without_tools():
+    bad = _sse(_tool_calls_delta([("c1", "slow", "{not json")]))
+    client = FakeClient(
+        streams=[bad] * 3 + [_sse(_text_delta("give up answer"))]
+    )
+    agent = Agent("http://x/v1", "m", "P", client=client, tools=_DUMMY_TOOLS)
+    items = list(agent.reply("go", lambda n, a: "ok"))
+    # initial call + 2 retries, then one tools-disabled final answer
+    assert len(client.payloads) == 4
+    assert "tools" not in client.payloads[-1]
+    assert sum(1 for i in items if isinstance(i, ToolRound)) == 3
+    assert [i for i in items if isinstance(i, str)] == ["give up answer"]
+    assert sum(1 for i in items if isinstance(i, Finalised)) == 1
+
+
+def test_malformed_counter_resets_after_clean_round():
+    bad = _sse(_tool_calls_delta([("c1", "slow", "{not json")]))
+    good = _sse(_tool_calls_delta([("c2", "slow", "{}")]))
+    client = FakeClient(
+        streams=[bad, good, bad, good, bad, good, _sse(_text_delta("ok"))]
+    )
+    agent = Agent("http://x/v1", "m", "P", client=client, tools=_DUMMY_TOOLS)
+    items = list(agent.reply("go", lambda n, a: "ok"))
+    # alternating bad/clean rounds never exhaust the retry cap
+    assert not any(isinstance(i, Finalised) for i in items)
+    assert [i for i in items if isinstance(i, str)] == ["ok"]
+    assert len(client.payloads) == 7
+
+
+def test_finalised_state_resumes_with_fresh_budget():
+    tool_round = _sse(_tool_calls_delta([("c1", "slow", "{}")]))
+    first = FakeClient(
+        streams=[tool_round, tool_round, _sse(_text_delta("partial"))]
+    )
+    agent1 = Agent(
+        "http://x/v1", "m", "P", client=first,
+        tools=_DUMMY_TOOLS, max_tool_rounds=1,
+    )
+    items1 = list(agent1.reply("check the weather", lambda n, a: "sunny"))
+    fins = [i for i in items1 if isinstance(i, Finalised)]
+    assert len(fins) == 1
+    saved = fins[0].messages
+    # resumed context: the exchange so far (no system prompt), ending on the
+    # tools-disabled partial answer
+    assert saved[0] == {"role": "user", "content": "check the weather"}
+    assert any(m["role"] == "tool" for m in saved)
+    assert saved[-1] == {"role": "assistant", "content": "partial"}
+
+    second = FakeClient(streams=[tool_round, _sse(_text_delta("full answer"))])
+    agent2 = Agent(
+        "http://x/v1", "m", "P", client=second,
+        tools=_DUMMY_TOOLS, max_tool_rounds=1,
+    )
+    items2 = list(
+        agent2.reply("continue", lambda n, a: "sunny", resume_messages=saved)
+    )
+    # the payload holds the live message list, so check membership rather
+    # than positions: the resume nudge is there and the bare user text is not
+    messages = second.payloads[0]["messages"]
+    assert messages[0]["role"] == "system"
+    assert {"role": "user", "content": CONTINUE_PROMPT} in messages
+    assert not any(m.get("content") == "continue" for m in messages)
+    assert any(m["role"] == "tool" for m in messages)
+    # fresh budget: with max_tool_rounds=1 the resumed task still gets a round
+    assert sum(1 for i in items2 if isinstance(i, ToolRound)) == 1
+    assert [i for i in items2 if isinstance(i, str)] == ["full answer"]
+    assert not any(isinstance(i, Finalised) for i in items2)
 
 
 def test_multi_round_tools_loop(tmp_path, monkeypatch):

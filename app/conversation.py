@@ -26,6 +26,12 @@ corrupt or unreadable file is discarded (fresh conversation / fresh index)
 so a bad file can never kill startup. A legacy single
 <data_dir>/conversation.json (pre-T021) is imported as the first session
 once, then removed.
+
+Finalised tool tasks: when a reply ends early on its tool budget (see
+app/agent.py), the pipeline stores the task's message state on the
+conversation (in-memory only, `tool_state`); a follow-up 'continue'
+utterance (is_continue / resolve_continue) resumes that task with a fresh
+tool budget, at most config.MAX_CONTINUATIONS times.
 """
 from __future__ import annotations
 
@@ -35,6 +41,8 @@ import os
 import threading
 import time
 from typing import Callable, Dict, List, Optional, Tuple
+
+from app import config
 
 log = logging.getLogger("vivo.conversation")
 
@@ -95,6 +103,9 @@ class Conversation:
         self.lock = threading.RLock()
         self.summary: Optional[str] = None
         self.turns: List[Turn] = []
+        # In-memory only (never persisted): the message state of a finalised
+        # tool task awaiting a user 'continue', if any.
+        self.tool_state: Optional[dict] = None
         self._compactions = 0
         self._compacting = False
         self._on_change = on_change
@@ -176,6 +187,20 @@ class Conversation:
                 out.append({"role": "user", "content": user_text})
                 out.append({"role": "assistant", "content": assistant_text})
             return out
+
+    # -- finalised tool-task state -----------------------------------------
+    def set_tool_state(self, messages: List[dict], continuations: int) -> None:
+        """Record a finalised tool task so the user can say 'continue'.
+        In-memory only: a restart loses the pending task, not its turns."""
+        with self.lock:
+            self.tool_state = {
+                "messages": list(messages),
+                "continuations": max(0, int(continuations)),
+            }
+
+    def clear_tool_state(self) -> None:
+        with self.lock:
+            self.tool_state = None
 
     # -- compaction ----------------------------------------------------------
     def size_chars(self) -> int:
@@ -285,6 +310,39 @@ class Conversation:
             self._on_change(self)
         except Exception:
             log.exception("conversation change callback failed")
+
+
+CONTINUE_LIMIT_REPLY = (
+    "I've reached my limit for picking that back up. Let's try a different "
+    "approach."
+)
+
+
+def is_continue(text: str) -> bool:
+    """True for a bare 'continue' utterance (case-insensitive, surrounding
+    punctuation ignored)."""
+    return text.strip().lower().rstrip(" .,!?") == "continue"
+
+
+def resolve_continue(
+    conv: "Conversation", text: str
+) -> Tuple[Optional[List[dict]], Optional[str]]:
+    """Resolve an utterance against a pending finalised tool task.
+
+    Returns (resume_messages, refusal): resume_messages when the user picks
+    a pending task back up within the continuation budget (config
+    .MAX_CONTINUATIONS), a fixed refusal when the budget is exhausted. Any
+    other utterance clears a stale pending state."""
+    if is_continue(text):
+        state = conv.tool_state
+        if state is not None:
+            if state["continuations"] >= config.MAX_CONTINUATIONS:
+                conv.clear_tool_state()
+                return None, CONTINUE_LIMIT_REPLY
+            conv.set_tool_state(state["messages"], state["continuations"] + 1)
+            return state["messages"], None
+    conv.clear_tool_state()
+    return None, None
 
 
 class SessionStore:

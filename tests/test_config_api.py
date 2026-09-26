@@ -182,6 +182,28 @@ def test_api_post_validates_writes_and_applies(api_env):
         assert "must be at least" in str(bad2.json()["detail"])
 
 
+def test_api_post_max_continuations_validates_persists_and_applies_live(api_env):
+    from app.conversation import Conversation, resolve_continue
+
+    with TestClient(_offline_app()) as c:
+        r = c.post("/api/config", json={"values": {"agent": {"max_continuations": 1}}})
+        assert r.status_code == 200, r.text
+        assert config.MAX_CONTINUATIONS == 1
+        assert "max_continuations = 1" in api_env.read_text()
+
+        # the budget takes effect immediately (read live per utterance)
+        conv = Conversation()
+        conv.set_tool_state([{"role": "user", "content": "task"}], 0)
+        resume, refusal = resolve_continue(conv, "continue")
+        assert resume is not None and refusal is None
+        resume, refusal = resolve_continue(conv, "continue")  # budget of 1 exhausted
+        assert resume is None and refusal is not None
+
+        bad = c.post("/api/config", json={"values": {"agent": {"max_continuations": 11}}})
+        assert bad.status_code == 400
+        assert "must be at most" in str(bad.json()["detail"])
+
+
 def test_hidden_token_threshold_is_validated_and_applied(api_env):
     """compact_after_tokens is a hidden key: not shown in the pane, but it is
     validated, persisted and hot-applied like any other setting."""

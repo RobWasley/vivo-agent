@@ -6,7 +6,12 @@
 - streaming: final answer deltas are yielded live (sentence-chunked TTS
   downstream can start before the full reply is generated)
 - tool calls are executed internally (in parallel within a round) and the
-  loop re-calls the model; tool exceptions become model-visible error text
+  loop re-calls the model; tool exceptions and malformed tool arguments
+  become model-visible error text
+- when the tool-round limit is reached (or malformed arguments exhaust the
+  retry cap) the loop ends with one tools-disabled final answer and yields a
+  Finalised marker carrying the state to resume the task later with a fresh
+  budget (Agent.reply(resume_messages=...))
 - `reply()` accepts prior conversation history (see app/conversation.py)
 - `summarize()` is a non-streaming helper for conversation compaction
 - `dream_pass()` is a non-streaming LLM memory-consolidation pass (dreaming)
@@ -25,6 +30,18 @@ DEFAULT_MAX_TOOL_ROUNDS = 8
 SUMMARY_MAX_TOKENS = 200
 DREAM_MAX_TOKENS = 600
 DEFAULT_TOOL_RETRIES = 2
+DEFAULT_MALFORMED_RETRIES = 2
+
+# Nudge for the tools-disabled final answer when the tool-round limit is
+# reached or malformed arguments exhaust the retry cap. Deliberately makes no
+# mention of tool budgets or tool-call internals.
+FINAL_ANSWER_PROMPT = (
+    "Please give your final answer now, based on the information you already "
+    "have."
+)
+
+# Nudge that resumes a finalised task with a fresh tool-round budget.
+CONTINUE_PROMPT = "Please continue with that."
 
 DREAM_PROMPT = (
     "You are vivo's memory consolidator. You are given the memory archive and "
@@ -46,6 +63,22 @@ DREAM_PROMPT = (
 
 class ToolRound:
     """Control signal: a round ended with tool calls (already executed)."""
+
+
+class Finalised:
+    """Control signal: the tool loop ended early (tool-round limit, or
+    malformed tool arguments past the retry cap) after one tools-disabled
+    final answer. `messages` holds the exchange so far without the leading
+    system prompt, so the task can be resumed later with a fresh budget via
+    Agent.reply(resume_messages=...)."""
+
+    __slots__ = ("messages",)
+
+    def __init__(self, messages: List[dict]) -> None:
+        self.messages = messages
+
+    def __repr__(self) -> str:
+        return f"Finalised({len(self.messages)} messages)"
 
 
 class ReasoningDelta:
@@ -71,6 +104,7 @@ class Agent:
         max_tokens: int = DEFAULT_MAX_TOKENS,
         max_tool_rounds: int = DEFAULT_MAX_TOOL_ROUNDS,
         tool_retries: int = DEFAULT_TOOL_RETRIES,
+        malformed_retries: int = DEFAULT_MALFORMED_RETRIES,
         thinking: bool = False,
         system_prompt: str = "",
         user_profile: str = "",
@@ -87,6 +121,7 @@ class Agent:
         self.max_tokens = max_tokens
         self.max_tool_rounds = max_tool_rounds
         self.tool_retries = max(int(tool_retries), 0)
+        self.malformed_retries = max(int(malformed_retries), 0)
         self.client = client or httpx.Client(timeout=timeout)
         self._owns_client = client is None
 
@@ -100,7 +135,7 @@ class Agent:
     def __exit__(self, *exc) -> None:
         self.close()
 
-    def _payload(self, messages: List[dict]) -> dict:
+    def _payload(self, messages: List[dict], include_tools: bool = True) -> dict:
         payload = {
             "model": self.model,
             "messages": messages,
@@ -108,12 +143,12 @@ class Agent:
             "max_tokens": self.max_tokens,
             "chat_template_kwargs": {"enable_thinking": self.thinking},
         }
-        if self.tools:
+        if include_tools and self.tools:
             payload["tools"] = self.tools
             payload["tool_choice"] = "auto"
         return payload
 
-    def _stream_once(self, messages: List[dict]):
+    def _stream_once(self, messages: List[dict], include_tools: bool = True):
         """One completion. Yields (kind, value) where kind is 'reasoning'
         (thinking deltas, when enabled), 'text', or 'tool_calls' (final list
         at end of stream)."""
@@ -127,7 +162,7 @@ class Agent:
                 with self.client.stream(
                     "POST",
                     f"{self.base_url}/chat/completions",
-                    json=self._payload(messages),
+                    json=self._payload(messages, include_tools),
                 ) as r:
                     r.raise_for_status()
                     for line in r.iter_lines():
@@ -186,22 +221,36 @@ class Agent:
             return
 
     def reply(
-        self, user_text: str, execute, history: Optional[List[dict]] = None
+        self,
+        user_text: str,
+        execute,
+        history: Optional[List[dict]] = None,
+        resume_messages: Optional[List[dict]] = None,
     ) -> Iterator:
-        """Run the tool loop. Yields str deltas of the final answer and
-        ToolRound markers after executed tool rounds. `execute(name, args)
-        -> str` runs a tool. `history` is prior OpenAI-style messages
-        (system/user/assistant), e.g. from Conversation.messages()."""
+        """Run the tool loop. Yields str deltas of the final answer,
+        ToolRound markers after executed tool rounds, and one Finalised
+        marker when the loop ends early (tool-round limit reached, or
+        malformed tool arguments past the retry cap) after a single
+        tools-disabled final answer. `execute(name, args) -> str` runs a
+        tool. `history` is prior OpenAI-style messages (system/user/
+        assistant), e.g. from Conversation.messages(); `resume_messages`
+        (from a Finalised marker) instead restarts that finalised task with
+        a fresh tool-round budget."""
         system = self.persona
         if self.system_prompt:
             system = f"{self.persona}\n{self.system_prompt}"
         if self.user_profile:
             system = f"{system}\n{self.user_profile}"
         messages = [{"role": "system", "content": system}]
-        if history:
-            messages.extend(history)
-        messages.append({"role": "user", "content": user_text})
+        if resume_messages is not None:
+            messages.extend(resume_messages)
+            messages.append({"role": "user", "content": CONTINUE_PROMPT})
+        else:
+            if history:
+                messages.extend(history)
+            messages.append({"role": "user", "content": user_text})
         rounds = 0
+        malformed_rounds = 0
         while True:
             tool_calls: Optional[List[dict]] = None
             for kind, value in self._stream_once(messages):
@@ -211,39 +260,73 @@ class Agent:
                     yield ReasoningDelta(value)
                 else:
                     tool_calls = value
-            if not tool_calls or rounds >= self.max_tool_rounds:
+            if not tool_calls:
                 return
-            rounds += 1
-            messages.append(
-                {
-                    "role": "assistant",
-                    "content": None,
-                    "tool_calls": tool_calls,
-                }
-            )
-
-            def run_tool(tc: dict) -> str:
-                try:
-                    args = json.loads(tc["function"]["arguments"] or "{}")
-                except json.JSONDecodeError:
-                    args = {}
-                try:
-                    return str(execute(tc["function"]["name"], args))
-                except Exception as e:  # noqa: BLE001 - model-visible error text
-                    return f"error: {type(e).__name__}: {e}"
-
-            # parallel within a round; results stay in tool_call order
-            with ThreadPoolExecutor(max_workers=min(4, len(tool_calls))) as pool:
-                results = list(pool.map(run_tool, tool_calls))
-            for tc, result in zip(tool_calls, results):
+            finalising = rounds >= self.max_tool_rounds
+            if not finalising:
+                rounds += 1
                 messages.append(
                     {
-                        "role": "tool",
-                        "tool_call_id": tc["id"],
-                        "content": result,
+                        "role": "assistant",
+                        "content": None,
+                        "tool_calls": tool_calls,
                     }
                 )
-            yield ToolRound()
+
+                def run_tool(tc: dict):
+                    name = tc["function"]["name"]
+                    try:
+                        args = json.loads(tc["function"]["arguments"] or "{}")
+                    except json.JSONDecodeError:
+                        # Malformed arguments never silently become {}; the
+                        # model gets a concise error and a chance to reissue.
+                        return (
+                            f"error: {name} got malformed arguments (invalid "
+                            "JSON). Call it again with a valid JSON object.",
+                            True,
+                        )
+                    try:
+                        return str(execute(name, args)), False
+                    except Exception as e:  # noqa: BLE001 - model-visible error text
+                        return f"error: {type(e).__name__}: {e}", False
+
+                # parallel within a round; results stay in tool_call order
+                with ThreadPoolExecutor(max_workers=min(4, len(tool_calls))) as pool:
+                    results = list(pool.map(run_tool, tool_calls))
+                malformed = 0
+                for tc, (result, bad) in zip(tool_calls, results):
+                    if bad:
+                        malformed += 1
+                    messages.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": tc["id"],
+                            "content": result,
+                        }
+                    )
+                yield ToolRound()
+                if malformed:
+                    # consecutive-malformed counter: a clean round resets it
+                    malformed_rounds += 1
+                    if malformed_rounds > self.malformed_retries:
+                        finalising = True
+                else:
+                    malformed_rounds = 0
+            if finalising:
+                messages.append({"role": "user", "content": FINAL_ANSWER_PROMPT})
+                final_parts: List[str] = []
+                for kind, value in self._stream_once(messages, include_tools=False):
+                    if kind == "text":
+                        final_parts.append(value)
+                        yield value
+                    elif kind == "reasoning":
+                        yield ReasoningDelta(value)
+                final_text = "".join(final_parts)
+                if final_text:
+                    # keep the partial answer in the resumed context
+                    messages.append({"role": "assistant", "content": final_text})
+                yield Finalised(list(messages[1:]))
+                return
 
     def summarize(self, messages: List[dict]) -> str:
         """Non-streaming summary of a conversation slice (compaction)."""

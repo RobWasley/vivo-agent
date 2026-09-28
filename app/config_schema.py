@@ -493,14 +493,24 @@ SCHEMA = {
                 "step": 1,
                 "attr": "KEEP_RECENT_TURNS",
             },
+            "dream_time": {
+                "type": "str",
+                "label": "Dream time (HH:MM)",
+                "help": "When the nightly memory pass runs, in your time zone (e.g. 03:00). It wakes "
+                        "the archive once a day at this wall-clock time and keeps only high-value "
+                        "facts. Empty = fall back to the interval below.",
+                "apply": "now",
+                "attr": "DREAM_TIME",
+            },
             "dream_interval_s": {
                 "type": "int",
                 "label": "Dream interval (s)",
-                "help": "How often the background pass reviews local memory and keeps only high-value facts.",
+                "help": "Fallback: how often the background pass runs when no dream time is set.",
                 "apply": "now",
                 "min": 60,
                 "max": 86400,
                 "step": 60,
+                "hidden": True,
                 "attr": "DREAM_INTERVAL_S",
             },
         },

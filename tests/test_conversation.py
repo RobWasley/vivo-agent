@@ -27,9 +27,14 @@ def test_persistence_roundtrip(tmp_path):
     c.add_turn("c", "d")
     c2 = Conversation(data_path=p)
     assert c2.turns == [("a", "b"), ("c", "d")]
-    with open(p, encoding="utf-8") as f:
-        raw = json.load(f)
-    assert raw["turns"] == [["a", "b"], ["c", "d"]]
+    vault_doc = c2._vault.read("sessions", "conv.md")
+    assert vault_doc is not None
+    turns_raw = vault_doc.frontmatter.get("turns")
+    if isinstance(turns_raw, str):
+        turns_list = json.loads(turns_raw)
+    else:
+        turns_list = turns_raw
+    assert turns_list == [["a", "b"], ["c", "d"]]
 
 
 def test_corrupt_file_starts_fresh(tmp_path):

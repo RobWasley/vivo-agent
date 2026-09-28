@@ -133,10 +133,12 @@ def test_on_change_updates_index(tmp_path):
     row = [r for r in store.list_sessions() if r["id"] == sid][0]
     assert row["turns"] == 1
     assert row["last_used"] >= before
-    index = json.loads((tmp_path / "sessions.json").read_text())
-    assert index["active"] == sid
-    assert index["sessions"][sid]["turns"] == 1
-    assert (tmp_path / "sessions" / f"{sid}.json").exists()
+    index_doc = store._vault.read("sessions", "index.md")
+    assert index_doc.frontmatter["active"] == sid
+    sessions_raw = index_doc.frontmatter["sessions"]
+    sessions = json.loads(sessions_raw) if isinstance(sessions_raw, str) else sessions_raw
+    assert sessions[sid]["turns"] == 1
+    assert (tmp_path / "vault" / "sessions" / f"{sid}.md").exists()
 
 
 def test_corrupt_index_starts_fresh(tmp_path):
@@ -174,6 +176,42 @@ def test_orphan_files_adopted(tmp_path):
     conv = store.conversation_for("orphan1")
     assert conv.turns == [("u", "a"), ("u2", "a2")]
     assert conv.summary == "s"
+
+
+def test_orphan_vault_session_adopted(tmp_path):
+    """A vault session document that is not in the index must be adopted —
+    including ones whose turns frontmatter is a JSON array (regression: the
+    old int() coercion crashed and silently dropped the session)."""
+    from app.vault import Vault
+
+    vault = Vault(root=str(tmp_path / "vault"))
+    vault.write(
+        "sessions", "orphan-1.md",
+        title="orphan-1",
+        frontmatter={
+            "id": "orphan-1",
+            "updated_at": "2026-09-20T10:00:00+00:00",
+            "summary": "orphan summary",
+            "compactions": 0,
+            "turns": [["u1", "a1"], ["u2", "a2"]],
+        },
+        content="## Summary\n\norphan summary",
+    )
+
+    store = SessionStore(data_dir=str(tmp_path))
+    rows = {r["id"]: r for r in store.list_sessions()}
+    assert set(rows) == {"orphan-1"}
+    assert rows["orphan-1"]["turns"] == 2
+    assert isinstance(rows["orphan-1"]["created"], float)
+    assert rows["orphan-1"]["created"] > 0
+    conv = store.conversation_for("orphan-1")
+    assert conv.turns == [("u1", "a1"), ("u2", "a2")]
+    assert conv.summary == "orphan summary"
+
+    # Reopening reads the persisted index without duplicating the session
+    reopened = SessionStore(data_dir=str(tmp_path))
+    assert set(r["id"] for r in reopened.list_sessions()) == {"orphan-1"}
+    assert reopened.active_id == "orphan-1"
 
 
 def test_legacy_conversation_migrated(tmp_path):

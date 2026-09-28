@@ -55,8 +55,14 @@ DREAM_PROMPT = (
     "transient reminders or task output.\n"
     '- "connections": a list of 0-5 short sentences linking facts to each '
     "other (shared projects, people, or places).\n"
+    '- "merge": a list of 0-5 objects {"keep": id, "drop": [ids]} grouping '
+    "facts that say the same thing in different words. Keep the clearest "
+    "phrasing, drop the rest. Only for genuine near-duplicates, never for "
+    "facts that add distinct information. The kept fact always survives; a "
+    "fact marked (core) may only be dropped this way, never via pruning.\n"
     '- "pruned": a list of fact ids that are stale, contradicted, or low '
-    "value and can be deleted. Never list a fact marked (core).\n"
+    "value and can be deleted. Never list a fact marked (core), and never "
+    "list a fact you keep in a merge.\n"
     "Reply with the JSON object only: no markdown fences, no commentary."
 )
 
@@ -356,9 +362,10 @@ class Agent:
     def dream_pass(self, archive_text: str, candidates: List[dict]) -> dict:
         """Non-streaming LLM dream over the memory archive.
 
-        Returns {"summary", "new_facts", "connections", "pruned"}. Unparseable
-        output degrades to empty lists (and the raw text as summary) instead
-        of raising, so a chatty model can never kill a dream pass."""
+        Returns {"summary", "new_facts", "connections", "pruned", "merge"}.
+        Unparseable output degrades to empty lists (and the raw text as
+        summary) instead of raising, so a chatty model can never kill a dream
+        pass."""
         cand_lines = "\n".join(
             f'- {item["text"]} (id: {item["id"]})'
             + (" (core)" if item.get("core") else "")
@@ -406,6 +413,7 @@ def parse_dream_response(content: str) -> dict:
             "new_facts": [],
             "connections": [],
             "pruned": [],
+            "merge": [],
         }
 
     def as_list(value) -> List[str]:
@@ -415,9 +423,30 @@ def parse_dream_response(content: str) -> dict:
             return [value.strip()]
         return []
 
+    def as_merge(value) -> List[dict]:
+        if not isinstance(value, list):
+            return []
+        groups = []
+        for item in value:
+            if not isinstance(item, dict):
+                continue
+            keep = str(item.get("keep") or "").strip()
+            raw_drop = item.get("drop")
+            if isinstance(raw_drop, list):
+                drop = [str(v).strip() for v in raw_drop if str(v).strip()]
+            elif isinstance(raw_drop, str) and raw_drop.strip():
+                drop = [raw_drop.strip()]
+            else:
+                drop = []
+            drop = [drop_id for drop_id in drop if drop_id != keep]
+            if keep and drop:
+                groups.append({"keep": keep, "drop": drop})
+        return groups[:5]
+
     return {
         "summary": str(raw.get("summary") or "").strip(),
         "new_facts": as_list(raw.get("new_facts"))[:10],
         "connections": as_list(raw.get("connections"))[:10],
         "pruned": as_list(raw.get("pruned"))[:20],
+        "merge": as_merge(raw.get("merge")),
     }

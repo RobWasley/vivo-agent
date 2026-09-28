@@ -119,6 +119,15 @@
         </svg>
         <span class="nav-label">Memory</span>
       </button>
+      <button class="nav-btn" id="btn-graph" title="Memory graph — the vault as an Obsidian-style node graph">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="12" cy="5" r="2.2"/>
+          <circle cx="5" cy="17.5" r="2.2"/>
+          <circle cx="19" cy="17.5" r="2.2"/>
+          <path d="M10.9 6.9 6.1 15.4M13.1 6.9l4.8 8.5M7.2 17.5h9.6"/>
+        </svg>
+        <span class="nav-label">Graph</span>
+      </button>
       <button class="nav-btn" id="btn-reminders" title="Manage reminders and scheduled tasks">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
           <path d="M6.5 8.5a5.5 5.5 0 0 1 11 0c0 3.6 1.4 5 2 6H4.5c.6-1 2-2.4 2-6z"/>
@@ -452,6 +461,49 @@
     </div>
   </dialog>
 
+  <dialog id="graph" class="graph-dialog">
+    <div class="settings-head graph-head">
+      <h2>Memory graph</h2>
+      <label class="graph-search" for="graph-search" title="Filter nodes by name">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round">
+          <circle cx="10.5" cy="10.5" r="6.5"/>
+          <path d="m15.5 15.5 5 5"/>
+        </svg>
+        <input type="text" id="graph-search" placeholder="search nodes…" autocomplete="off" spellcheck="false">
+      </label>
+      <span class="panel-spacer"></span>
+      <button class="ghost tiny" id="btn-graph-refresh" title="Rebuild the graph from the vault">refresh</button>
+      <button class="ghost" id="btn-graph-x" title="Close">&times;</button>
+    </div>
+    <div class="graph-body">
+      <div id="graph-canvas" aria-label="Vault graph"></div>
+      <div class="graph-legend" aria-hidden="true">
+        <span class="graph-legend-item"><i class="lg lg-core"></i>core</span>
+        <span class="graph-legend-item"><i class="lg lg-fact"></i>fact</span>
+        <span class="graph-legend-item"><i class="lg lg-dream"></i>dream</span>
+        <span class="graph-legend-item"><i class="lg lg-session"></i>session</span>
+        <span class="graph-legend-note">size = connections</span>
+      </div>
+      <p class="graph-empty" id="graph-empty" hidden>The vault is empty &mdash; nothing to plot yet.</p>
+      <aside class="graph-detail" id="graph-detail" hidden>
+        <div class="graph-detail-head">
+          <span class="graph-node-type" id="graph-detail-type"></span>
+          <button class="ghost tiny" id="btn-graph-detail-x" title="Close details">&times;</button>
+        </div>
+        <h3 class="graph-detail-title" id="graph-detail-title"></h3>
+        <p class="graph-detail-sub" id="graph-detail-sub"></p>
+        <h3 class="dreams-h">Connections</h3>
+        <div class="graph-detail-links" id="graph-detail-links"></div>
+        <button class="ghost tiny" id="btn-graph-open" hidden>open in…</button>
+      </aside>
+    </div>
+    <div class="settings-foot">
+      <span class="settings-msg" id="graph-msg"></span>
+      <span class="settings-spacer"></span>
+      <button class="ghost" id="btn-graph-close">Close</button>
+    </div>
+  </dialog>
+
   <dialog id="logs" class="logs-dialog">
     <div class="settings-head">
       <h2>System log</h2>
@@ -475,6 +527,7 @@
     </div>
   </dialog>
 
+  <script src="lib/cytoscape.min.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

@@ -217,8 +217,11 @@ def _emit() -> None:
     # when installed, ~4 chars/token otherwise), never a hard dependency.
     g["COMPACT_AFTER_TOKENS"] = _get("memory", "compact_after_tokens", "COMPACT_AFTER_TOKENS", 0, int)
     g["KEEP_RECENT_TURNS"] = _get("memory", "keep_recent_turns", "KEEP_RECENT_TURNS", 4, int)
-    # Hourly background pass to identify high-value facts and fold them into the
-    # local memory store (memory.md) without burning CPU on every turn.
+    # Background pass that identifies high-value facts and folds them into the
+    # local memory store (memory.md). Scheduled by the wall-clock time below
+    # (once a night, in the user's time zone); when no time is set it falls
+    # back to a free-running interval.
+    g["DREAM_TIME"] = _get("memory", "dream_time", "DREAM_TIME", "03:00", str)
     g["DREAM_INTERVAL_S"] = _get("memory", "dream_interval_s", "DREAM_INTERVAL_S", 3600, int)
 
     # --- Agent tools -------------------------------------------------------------
@@ -330,6 +333,7 @@ def effective_dict() -> dict:
             "compact_after_chars": g["COMPACT_AFTER_CHARS"],
             "compact_after_tokens": g["COMPACT_AFTER_TOKENS"],
             "keep_recent_turns": g["KEEP_RECENT_TURNS"],
+            "dream_time": g["DREAM_TIME"],
             "dream_interval_s": g["DREAM_INTERVAL_S"],
         },
         "agent": {

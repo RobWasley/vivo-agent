@@ -10,7 +10,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from app import bench, browser_stream, config, config_schema, models, pipeline
+from app import bench, browser_stream, config, config_schema, graph, models, pipeline
 from app.skills import SkillStore
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
@@ -228,6 +228,15 @@ async def delete_memory(fact_id: str, request: Request):
         raise HTTPException(status_code=404, detail="unknown memory fact") from exc
     log.info("memory fact deleted: %s", fact_id, extra={"event": "memory_delete"})
     return {"ok": True}
+
+
+@app.get("/api/graph")
+async def get_graph(request: Request):
+    """The vault as a node/link graph for the console's graph view (T044)."""
+    engines = request.app.state.engines
+    return await asyncio.to_thread(
+        graph.build_graph, engines.memory, engines.dreams, engines.sessions
+    )
 
 
 def _reminder_store(request: Request):

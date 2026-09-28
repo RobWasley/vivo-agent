@@ -44,6 +44,7 @@ def test_missing_file_uses_built_in_defaults(cfg, tmp_path):
     assert cfg.USER_TIMEZONE == ""
     assert cfg.USER_UNITS == "metric"
     assert cfg.UI_CAPTION_LINGER_S == 8.0
+    assert cfg.DREAM_TIME == "03:00"
     assert cfg.MAX_CONTINUATIONS == 3
     assert cfg.FILLER_PHRASES == (
         "Let me think about that.",
@@ -108,6 +109,7 @@ caption_linger_s = 12.5
 [memory]
 compact_after_chars = 9999
 keep_recent_turns = 2
+dream_time = "02:30"
 dream_interval_s = 7200
 
 [agent]
@@ -147,6 +149,7 @@ exec_timeout_s = 30
     assert cfg.UI_CAPTION_LINGER_S == 12.5
     assert cfg.COMPACT_AFTER_CHARS == 9999
     assert cfg.KEEP_RECENT_TURNS == 2
+    assert cfg.DREAM_TIME == "02:30"
     assert cfg.DREAM_INTERVAL_S == 7200
     assert cfg.MAX_TOOL_ROUNDS == 5
     assert cfg.TOOL_RETRIES == 2

@@ -514,7 +514,30 @@ def test_parse_dream_response_full_json():
         "new_facts": ["a", "b"],
         "connections": ["c"],
         "pruned": ["id1"],
+        "merge": [],
     }
+
+
+def test_parse_dream_response_merge():
+    from app.agent import parse_dream_response
+
+    out = parse_dream_response(json.dumps({
+        "summary": "s",
+        "merge": [
+            {"keep": "k1", "drop": ["d1", "d2"]},
+            {"keep": "k2", "drop": "d3"},           # bare string -> one-item list
+            {"keep": "k3", "drop": ["k3", "d4"]},   # self-drop is filtered out
+            {"keep": "", "drop": ["d5"]},           # missing keep -> dropped
+            "not a dict",
+            {"keep": "k6", "drop": []},             # nothing to drop -> dropped
+        ] + [{"keep": f"x{i}", "drop": [f"z{i}"]} for i in range(10)],
+    }))
+    assert out["merge"][:3] == [
+        {"keep": "k1", "drop": ["d1", "d2"]},
+        {"keep": "k2", "drop": ["d3"]},
+        {"keep": "k3", "drop": ["d4"]},
+    ]
+    assert len(out["merge"]) == 5  # capped at 5 groups
 
 
 def test_parse_dream_response_fenced_and_stringy():

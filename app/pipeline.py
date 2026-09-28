@@ -433,6 +433,10 @@ class Engines:
         )
         logging.getLogger("vivo").addHandler(VivoLogHandler(self.log_store))
         self.memory = MemoryStore(path=os.path.join(config.DATA_DIR, "memory.md"))
+        try:
+            self.memory.dedupe()
+        except Exception:  # noqa: BLE001 - dedupe must not break startup
+            log.exception("memory dedupe failed")
         self.skills = SkillStore(path=os.path.join(config.DATA_DIR, "skills"))
         self.reminders = ReminderStore(path=os.path.join(config.DATA_DIR, "reminders.json"))
         self.reminder_scheduler = get_default_scheduler(on_due=self._handle_due_reminder)
@@ -467,6 +471,7 @@ class Engines:
         self.dream_scheduler = DreamScheduler(
             self.memory,
             interval_seconds=config.DREAM_INTERVAL_S,
+            dream_time=config.DREAM_TIME,
             on_state=self._handle_dream_state,
             agent=self.agent,
             dreams=self.dreams,
@@ -645,14 +650,20 @@ class Engines:
         new_facts = len(record.get("new_facts") or [])
         connections = len(record.get("connections") or [])
         pruned = len(record.get("pruned") or [])
+        merged = (record.get("stats") or {}).get("merged", 0)
         log.info(
-            "dream complete: llm=%s new_facts=%d connections=%d pruned=%d",
-            record.get("llm"), new_facts, connections, pruned,
+            "dream complete: llm=%s new_facts=%d connections=%d pruned=%d merged=%d",
+            record.get("llm"), new_facts, connections, pruned, merged,
             extra={"event": "dream_complete"},
         )
         broadcast_dream_complete(
             record,
-            {"new_facts": new_facts, "connections": connections, "pruned": pruned},
+            {
+                "new_facts": new_facts,
+                "connections": connections,
+                "pruned": pruned,
+                "merged": merged,
+            },
         )
 
     def _handle_compaction(
@@ -708,8 +719,9 @@ def apply_config(engines: Engines) -> None:
         config.COMPACT_AFTER_CHARS, config.KEEP_RECENT_TURNS,
         config.COMPACT_AFTER_TOKENS,
     )
-    if hasattr(engines, "dream_scheduler") and config.DREAM_INTERVAL_S > 0:
+    if hasattr(engines, "dream_scheduler"):
         engines.dream_scheduler.interval_seconds = config.DREAM_INTERVAL_S
+        engines.dream_scheduler.dream_time = config.DREAM_TIME
     shell.MAX_TIMEOUT = config.EXEC_MAX_TIMEOUT  # shell.py snapshots it at import
     FILLER_PHRASES = config.FILLER_PHRASES  # ThinkingFiller reads the module global
     engines.wake.update(

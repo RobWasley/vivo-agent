@@ -136,6 +136,22 @@ const el = {
   btnLogsClear: $("btn-logs-clear"),
   btnLogsClose: $("btn-logs-close"),
   btnLogsX: $("btn-logs-x"),
+  btnGraph: $("btn-graph"),
+  graphDlg: $("graph"),
+  graphCanvas: $("graph-canvas"),
+  graphEmpty: $("graph-empty"),
+  graphDetail: $("graph-detail"),
+  graphDetailType: $("graph-detail-type"),
+  graphDetailTitle: $("graph-detail-title"),
+  graphDetailSub: $("graph-detail-sub"),
+  graphDetailLinks: $("graph-detail-links"),
+  btnGraphDetailX: $("btn-graph-detail-x"),
+  btnGraphOpen: $("btn-graph-open"),
+  graphSearch: $("graph-search"),
+  btnGraphRefresh: $("btn-graph-refresh"),
+  btnGraphClose: $("btn-graph-close"),
+  btnGraphX: $("btn-graph-x"),
+  graphMsg: $("graph-msg"),
   hint: $("hint"),
   telUplink: $("tel-uplink"),
   telPipeline: $("tel-pipeline"),
@@ -171,6 +187,7 @@ const S = {
   ttsSampleRate: DEFAULT_PLAY_RATE,
   outputVolume: DEFAULT_OUTPUT_VOLUME,
   dreaming: false,
+  graph: { cy: null, data: null, selectedId: null },
   wakeEnabled: false, // wake phrase configured on the server (T024)
   wakeActive: false, // wake-phrase session currently awake
   wakePhrase: "", // the configured phrase, for the UI
@@ -2868,7 +2885,14 @@ function loadDream(id) {
   }
   el.dreamsDetailHint.hidden = true;
   el.dreamsDetail.hidden = false;
-  el.dreamMeta.textContent = `${dreamTsFormat(dream.ts)} · ${dream.llm ? "llm dream" : "auto-consolidation"}`;
+  let meta = `${dreamTsFormat(dream.ts)} · ${dream.llm ? "llm dream" : "auto-consolidation"}`;
+  const dreamStats = dream.stats || {};
+  const changes = [];
+  if (dreamStats.added) changes.push(`${dreamStats.added} added`);
+  if (dreamStats.pruned) changes.push(`${dreamStats.pruned} pruned`);
+  if (dreamStats.merged) changes.push(`${dreamStats.merged} merged`);
+  if (changes.length) meta += ` · ${changes.join(" · ")}`;
+  el.dreamMeta.textContent = meta;
   el.dreamSummary.textContent = dream.summary || "(no summary)";
   const facts = dream.new_facts || [];
   el.dreamFacts.innerHTML = "";
@@ -3043,6 +3067,327 @@ function flashLogsMsg(text, isError) {
   }, 3000);
 }
 
+/* ---- Memory graph: the vault as an Obsidian-style node graph (T044) ---- */
+const GRAPH_COLORS = {
+  core: "#fbbf24",
+  fact: "#34d399",
+  dream: "#a78bfa",
+  session: "#38bdf8",
+};
+
+let graphMsgTimer = null;
+
+function flashGraphMsg(text, isError) {
+  el.graphMsg.textContent = text;
+  el.graphMsg.className = "settings-msg" + (isError ? " err" : " ok");
+  if (graphMsgTimer) clearTimeout(graphMsgTimer);
+  graphMsgTimer = setTimeout(() => {
+    el.graphMsg.textContent = "";
+    el.graphMsg.className = "settings-msg";
+  }, 3000);
+}
+
+async function fetchGraph() {
+  const res = await fetch("/api/graph");
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
+  return data;
+}
+
+function graphEdgeColor(ele) {
+  switch (ele.data("kind")) {
+    case "core":
+      return "rgba(251, 191, 36, 0.55)";
+    case "fact":
+      return "rgba(52, 211, 153, 0.55)";
+    case "talk":
+      return "rgba(56, 189, 248, 0.45)";
+    default:
+      return "rgba(139, 160, 191, 0.22)";
+  }
+}
+
+function graphStyle() {
+  return [
+    {
+      selector: "node",
+      style: {
+        "background-color": (ele) => GRAPH_COLORS[ele.data("type")] || "#64748b",
+        "background-opacity": 0.92,
+        "border-width": (ele) => (ele.data("type") === "core" ? 3 : 1.5),
+        "border-color": "#0b1220",
+        width: "mapData(degree, 0, 12, 12, 38)",
+        height: "mapData(degree, 0, 12, 12, 38)",
+        label: "data(label)",
+        "text-wrap": "wrap",
+        "text-max-width": "110px",
+        "font-size": "9px",
+        color: "#b9c9e2",
+        "text-valign": "bottom",
+        "text-margin-y": "4px",
+      },
+    },
+    {
+      selector: 'node[type = "core"]',
+      style: {
+        color: "#0b1220",
+        "font-size": "12px",
+        "font-weight": "bold",
+        "text-valign": "center",
+        "text-halign": "center",
+        "text-wrap": "wrap",
+        "text-max-width": "60px",
+      },
+    },
+    {
+      selector: "node.core-fact",
+      style: { "border-color": "#e9f1fc", "border-width": 2.5 },
+    },
+    {
+      selector: "edge",
+      style: {
+        width: (ele) =>
+          ele.data("kind") === "theme"
+            ? Math.min(0.6 + ele.data("weight") * 0.3, 2.4)
+            : 1.1,
+        "line-color": graphEdgeColor,
+        "curve-style": "bezier",
+      },
+    },
+    {
+      selector: ".dimmed",
+      style: { opacity: 0.08 },
+    },
+    {
+      selector: "node.search-hit",
+      style: { "border-color": "#e9f1fc", "border-width": 2.5 },
+    },
+    {
+      selector: "node:selected",
+      style: {
+        "border-color": "#e9f1fc",
+        "border-width": 3,
+        color: "#e9f1fc",
+        "font-size": "11px",
+        "z-index": 10,
+        "text-outline-color": "#0b1220",
+      },
+    },
+  ];
+}
+
+function renderGraph() {
+  const data = S.graph.data;
+  if (!data) return;
+  if (typeof cytoscape === "undefined") {
+    flashGraphMsg("graph library failed to load (static/lib missing?)", true);
+    return;
+  }
+  if (S.graph.cy) S.graph.cy.destroy();
+  const degree = {};
+  for (const link of data.links) {
+    degree[link.source] = (degree[link.source] || 0) + 1;
+    degree[link.target] = (degree[link.target] || 0) + 1;
+  }
+  const nodes = data.nodes.map((n) => ({
+    data: {
+      id: n.id,
+      label: n.label,
+      type: n.type,
+      degree: degree[n.id] || 0,
+    },
+    classes: n.type === "fact" && n.core ? "core-fact" : "",
+  }));
+  const edges = data.links.map((l, i) => ({
+    data: { id: `e${i}`, source: l.source, target: l.target, kind: l.kind, weight: l.weight || 1 },
+  }));
+  el.graphEmpty.hidden = !(nodes.length <= 1);
+  const cy = cytoscape({
+    container: el.graphCanvas,
+    elements: [...nodes, ...edges],
+    style: graphStyle(),
+    layout: {
+      name: "cose",
+      animate: false,
+      randomize: true,
+      padding: 40,
+      nodeDimensionsIncludeLabels: true,
+    },
+    minZoom: 0.08,
+    maxZoom: 4,
+  });
+  S.graph.cy = cy;
+  S.graph.selectedId = null;
+  el.graphDetail.hidden = true;
+  cy.on("layoutstop", () => cy.fit(null, 40));
+  cy.on("mouseover", "node", (e) => {
+    const n = e.target;
+    if (!n.isNode()) return;
+    const keep = n.union(n.neighborhood());
+    cy.batch(() => cy.elements().not(keep).addClass("dimmed"));
+  });
+  cy.on("mouseout", "node", () => {
+    cy.batch(() => cy.elements().removeClass("dimmed"));
+  });
+  cy.on("tap", "node", (e) => {
+    const n = e.target;
+    if (!n.isNode()) return;
+    cy.nodes().unselect();
+    n.select();
+    showGraphDetail(n.data("id"));
+  });
+  cy.on("tap", (e) => {
+    if (e.target === cy) {
+      cy.nodes().unselect();
+      el.graphDetail.hidden = true;
+    }
+  });
+  applyGraphSearch(el.graphSearch.value);
+}
+
+function applyGraphSearch(query) {
+  const cy = S.graph.cy;
+  if (!cy) return;
+  const q = (query || "").trim().toLowerCase();
+  cy.batch(() => cy.elements().removeClass("search-hit dimmed"));
+  if (!q) return;
+  const hits = cy.nodes().filter((n) =>
+    (n.data("label") || "").toLowerCase().includes(q)
+  );
+  cy.batch(() => {
+    hits.addClass("search-hit");
+    cy.nodes().not(hits).addClass("dimmed");
+    cy.edges().addClass("dimmed");
+  });
+}
+
+function showGraphDetail(id) {
+  const data = S.graph.data;
+  if (!data) return;
+  const node = data.nodes.find((n) => n.id === id);
+  if (!node) return;
+  S.graph.selectedId = id;
+  el.graphDetailType.textContent = node.type;
+  el.graphDetailType.dataset.type = node.type;
+  el.graphDetailTitle.textContent = node.label || node.id;
+  el.graphDetailSub.textContent = node.sub || "";
+  el.graphDetailLinks.innerHTML = "";
+  const known = new Set(data.nodes.map((n) => n.id));
+  const rows = [];
+  for (const link of data.links) {
+    let other = null;
+    if (link.source === id) other = link.target;
+    else if (link.target === id) other = link.source;
+    if (!other || !known.has(other)) continue;
+    rows.push({ other, kind: link.kind, weight: link.weight || 1, label: link.label || "" });
+  }
+  rows.sort((a, b) => b.weight - a.weight);
+  if (!rows.length) {
+    const p = document.createElement("p");
+    p.className = "dream-muted";
+    p.textContent = "No connections.";
+    el.graphDetailLinks.appendChild(p);
+  }
+  for (const row of rows) {
+    const other = data.nodes.find((n) => n.id === row.other);
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "graph-link-row";
+    const dot = document.createElement("span");
+    dot.className = `lg lg-${other.type}`;
+    const name = document.createElement("span");
+    name.textContent = other.label || other.id;
+    name.style.flex = "1";
+    name.style.overflow = "hidden";
+    name.style.textOverflow = "ellipsis";
+    name.style.whiteSpace = "nowrap";
+    const kind = document.createElement("span");
+    kind.className = "graph-link-kind";
+    kind.textContent = row.label ? `${row.kind} · ${row.label}` : row.kind;
+    btn.append(dot, name, kind);
+    btn.addEventListener("click", () => focusGraphNode(other.id));
+    el.graphDetailLinks.appendChild(btn);
+  }
+  const openBtn = el.btnGraphOpen;
+  openBtn.onclick = null;
+  if (node.type === "fact") {
+    openBtn.hidden = false;
+    openBtn.textContent = "open in memory";
+    openBtn.onclick = () => openMemoryAt(node.id);
+  } else if (node.type === "dream") {
+    openBtn.hidden = false;
+    openBtn.textContent = "open in dreams";
+    openBtn.onclick = () => openDreamsAt(node.id);
+  } else if (node.type === "session") {
+    openBtn.hidden = false;
+    openBtn.textContent = "open conversation";
+    openBtn.onclick = () => openSessionAt(node.id);
+  } else if (node.type === "core") {
+    openBtn.hidden = false;
+    openBtn.textContent = "open memory";
+    openBtn.onclick = () => openMemory();
+  } else {
+    openBtn.hidden = true;
+  }
+  el.graphDetail.hidden = false;
+}
+
+function focusGraphNode(id) {
+  const cy = S.graph.cy;
+  if (!cy) return;
+  const node = cy.getElementById(id);
+  if (node.empty()) return;
+  cy.nodes().unselect();
+  node.select();
+  cy.animate(
+    { center: { ele: node }, zoom: Math.max(cy.zoom(), 1.1) },
+    { duration: 250 }
+  );
+  showGraphDetail(id);
+}
+
+async function openMemoryAt(factId) {
+  el.memoryDlg.showModal();
+  try {
+    await refreshMemory(factId || "");
+    if (factId) loadMemory(factId);
+  } catch (err) {
+    flashMemoryMsg(`could not load memory: ${err.message}`, true);
+  }
+}
+
+async function openDreamsAt(dreamId) {
+  el.dreamsDlg.showModal();
+  try {
+    await refreshDreams();
+    if (dreamId) loadDream(dreamId);
+  } catch (err) {
+    flashDreamsMsg(`could not load dreams: ${err.message}`, true);
+  }
+}
+
+function openSessionAt(sessionId) {
+  if (el.sessionSelect.value !== sessionId) {
+    el.sessionSelect.value = sessionId;
+    sendJson({ type: "session", id: sessionId });
+  }
+}
+
+async function refreshGraph() {
+  try {
+    S.graph.data = await fetchGraph();
+  } catch (err) {
+    flashGraphMsg(`could not load graph: ${err.message}`, true);
+    return;
+  }
+  renderGraph();
+}
+
+async function openGraph() {
+  el.graphDlg.showModal();
+  await refreshGraph();
+}
+
 async function openLogs() {
   el.logsDlg.showModal();
   try {
@@ -3210,6 +3555,25 @@ el.btnLogsClose.addEventListener("click", closeLogs);
 el.btnLogsX.addEventListener("click", closeLogs);
 el.logsDlg.addEventListener("click", (ev) => {
   if (ev.target === el.logsDlg) closeLogs();
+});
+
+el.btnGraph.addEventListener("click", openGraph);
+const closeGraph = () => el.graphDlg.close();
+el.btnGraphClose.addEventListener("click", closeGraph);
+el.btnGraphX.addEventListener("click", closeGraph);
+el.graphDlg.addEventListener("click", (ev) => {
+  if (ev.target === el.graphDlg) closeGraph();
+});
+el.graphDlg.addEventListener("close", () => {
+  el.graphSearch.value = "";
+  applyGraphSearch("");
+});
+el.btnGraphRefresh.addEventListener("click", refreshGraph);
+el.graphSearch.addEventListener("input", () => applyGraphSearch(el.graphSearch.value));
+el.btnGraphDetailX.addEventListener("click", () => {
+  el.graphDetail.hidden = true;
+  S.graph.selectedId = null;
+  if (S.graph.cy) S.graph.cy.nodes().unselect();
 });
 
 el.btnBrowser.addEventListener("click", () =>

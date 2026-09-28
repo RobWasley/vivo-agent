@@ -40,9 +40,13 @@ import logging
 import os
 import threading
 import time
+from datetime import datetime
+from pathlib import Path
 from typing import Callable, Dict, List, Optional, Tuple
+from uuid import uuid4
 
 from app import config
+from app.vault import Vault
 
 log = logging.getLogger("vivo.conversation")
 
@@ -87,6 +91,12 @@ def _count_tokens(text: str) -> int:
 
 
 class Conversation:
+    """A single conversation session with turn history and compaction.
+
+    Persistence is vault-backed when a session_id is provided (via data_path
+    or explicitly); otherwise the conversation is in-memory only (as in tests).
+    """
+
     def __init__(
         self,
         data_path: Optional[str] = None,
@@ -95,6 +105,7 @@ class Conversation:
         compact_after_tokens: int = 0,
         on_change: Optional[ChangeListener] = None,
         on_compact: Optional[CompactListener] = None,
+        vault_root: Optional[str] = None,
     ):
         self.data_path = data_path
         self.compact_after_chars = compact_after_chars
@@ -110,11 +121,66 @@ class Conversation:
         self._compacting = False
         self._on_change = on_change
         self._on_compact = on_compact
+        self._vault: Vault | None = None
+        self._session_id: str | None = None
         if data_path:
+            if vault_root is None:
+                vault_root = str(Path(data_path).parent / "vault")
+            self._vault = Vault(root=vault_root)
+            self._session_id = Path(data_path).stem
             self._load()
 
     # -- persistence ----------------------------------------------------
+    def _doc_path(self) -> List[str]:
+        """Return vault path parts for this session's document."""
+        if not self._session_id:
+            return []
+        return ["sessions", f"{self._session_id}.md"]
+
     def _load(self) -> None:
+        if self._vault and self._session_id:
+            try:
+                doc = self._vault.read(*self._doc_path())
+                if doc and doc.frontmatter:
+                    turns_raw = doc.frontmatter.get("turns")
+                    if isinstance(turns_raw, str):
+                        try:
+                            turns_list = json.loads(turns_raw)
+                        except (json.JSONDecodeError, TypeError):
+                            turns_list = []
+                    elif isinstance(turns_raw, list):
+                        turns_list = turns_raw
+                    else:
+                        turns_list = []
+                    clean: List[Turn] = []
+                    for t in turns_list:
+                        if isinstance(t, list) and len(t) == 2 and all(isinstance(x, str) for x in t):
+                            clean.append((t[0], t[1]))
+                    self.summary = doc.frontmatter.get("summary") if isinstance(doc.frontmatter.get("summary"), str) and doc.frontmatter.get("summary") else None
+                    self.turns = clean
+                    try:
+                        self._compactions = max(0, int(doc.frontmatter.get("compactions") or 0))
+                    except (TypeError, ValueError):
+                        self._compactions = 0
+                    log.info(
+                        "loaded conversation from vault: %d turns, summary=%s",
+                        len(clean),
+                        "yes" if self.summary else "no",
+                    )
+                    return  # Successfully loaded from vault
+            except Exception:  # noqa: BLE001
+                log.exception("discarding unreadable conversation for session %s", self._session_id)
+                self.summary = None
+                self.turns = []
+                return
+        # No vault data: try legacy JSON file
+        if self.data_path:
+            self._load_json()
+
+    def _load_json(self) -> None:
+        """Load from legacy JSON file (for migration)."""
+        if not self.data_path:
+            return
         try:
             with open(self.data_path, encoding="utf-8") as f:
                 raw = json.load(f)
@@ -137,7 +203,7 @@ class Conversation:
             except (TypeError, ValueError):
                 self._compactions = 0
             log.info(
-                "loaded conversation: %d turns, summary=%s",
+                "loaded conversation from JSON: %d turns, summary=%s",
                 len(clean),
                 "yes" if self.summary else "no",
             )
@@ -149,20 +215,33 @@ class Conversation:
             self.turns = []
 
     def _save(self) -> None:
-        if not self.data_path:
+        if not self._vault or not self._session_id:
             return
-        tmp = self.data_path + ".tmp"
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(
-                {
-                    "summary": self.summary,
-                    "turns": self.turns,
-                    "compactions": self._compactions,
-                },
-                f,
-                ensure_ascii=False,
-            )
-        os.replace(tmp, self.data_path)
+        now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        # Convert turns to JSON string for frontmatter serialization
+        turns_json = json.dumps([list(t) for t in self.turns])
+        fm = {
+            "id": self._session_id,
+            "updated_at": now,
+            "summary": self.summary or "",
+            "compactions": self._compactions,
+            "turns": turns_json,
+        }
+        body_lines = []
+        if self.summary:
+            body_lines.append(f"## Summary\n\n{self.summary}\n")
+        if self.turns:
+            body_lines.append("## Turns\n\n")
+            for i, (user_text, assistant_text) in enumerate(self.turns, 1):
+                body_lines.append(f"### Turn {i}\n\n")
+                body_lines.append(f"**You**: {user_text}\n\n")
+                body_lines.append(f"**Vivo**: {assistant_text}\n\n")
+        self._vault.write(
+            *self._doc_path(),
+            title=self._session_id,
+            frontmatter=fm,
+            content="\n".join(body_lines),
+        )
 
     # -- turns ------------------------------------------------------------
     def add_turn(self, user_text: str, assistant_text: str) -> None:
@@ -349,12 +428,12 @@ class SessionStore:
     """Named conversation sessions for one process (T021).
 
     Exactly one session is active at a time. Each session is a Conversation
-    persisted at <data_dir>/sessions/<id>.json; <data_dir>/sessions.json is
-    the index {active, sessions: {id: {created, last_used, turns}}}. With
-    data_dir=None the store is fully in-memory (tests).
+    persisted as a vault document at <vault_root>/sessions/<id>.md; the session
+    index is kept in-memory and persisted to <vault_root>/sessions/index.md.
+    With data_dir=None the store is fully in-memory (tests).
 
-    A legacy single <data_dir>/conversation.json (pre-T021) is imported as a
-    session once, then removed; orphan sessions/*.json files not in the index
+    A legacy single <data_dir>/conversation.json (pre-vault) is imported as a
+    session once, then removed; orphan session files not in the index
     are adopted, so history is not lost across upgrades or a lost index.
     """
 
@@ -375,8 +454,10 @@ class SessionStore:
         self._conversations: Dict[str, Conversation] = {}
         self._retired: set = set()  # deleted ids: never reused, even in the same second
         self._index = {"active": None, "sessions": {}}
+        self._vault: Vault | None = None
         if data_dir:
-            os.makedirs(os.path.join(data_dir, "sessions"), exist_ok=True)
+            vault_root = str(Path(data_dir) / "vault")
+            self._vault = Vault(root=vault_root)
             self._load_index()
             self._adopt_orphans()
             self._migrate_legacy()
@@ -396,7 +477,12 @@ class SessionStore:
     def sessions_dir(self) -> Optional[str]:
         return os.path.join(self.data_dir, "sessions") if self.data_dir else None
 
-    def _session_path(self, session_id: str) -> Optional[str]:
+    def _session_doc_path(self, session_id: str) -> List[str]:
+        """Return vault path parts for a session document."""
+        return ["sessions", f"{session_id}.md"]
+
+    def _legacy_session_path(self, session_id: str) -> Optional[str]:
+        """Return path to legacy JSON session file."""
         return (
             os.path.join(self.sessions_dir, f"{session_id}.json")
             if self.sessions_dir
@@ -484,12 +570,18 @@ class SessionStore:
             del self._index["sessions"][session_id]
             self._retired.add(session_id)
             self._conversations.pop(session_id, None)
-            path = self._session_path(session_id)
-            if path:
+            if self._vault:
                 try:
-                    os.remove(path)
-                except OSError:
+                    self._vault.delete("sessions", f"{session_id}.md")
+                except Exception:
                     pass
+            else:
+                path = self._legacy_session_path(session_id)
+                if path:
+                    try:
+                        os.remove(path)
+                    except OSError:
+                        pass
             if self._index["active"] == session_id:
                 if self._index["sessions"]:
                     self._index["active"] = self._newest_id_locked()
@@ -518,6 +610,19 @@ class SessionStore:
                 conv.compact_after_tokens = compact_after_tokens
 
     # -- internals -----------------------------------------------------------
+    @staticmethod
+    def _iso_ts(value) -> float:
+        """Parse an ISO-8601 timestamp (or epoch) into an epoch float;
+        falls back to now for missing/unparseable values."""
+        if value in (None, ""):
+            return time.time()
+        if isinstance(value, (int, float)):
+            return float(value)
+        try:
+            return datetime.fromisoformat(str(value)).timestamp()
+        except (TypeError, ValueError):
+            return time.time()
+
     def _newest_id_locked(self) -> str:
         return max(
             self._index["sessions"],
@@ -533,8 +638,8 @@ class SessionStore:
         return candidate
 
     def _new_conversation(self, session_id: str) -> Conversation:
-        conv = Conversation(
-            data_path=self._session_path(session_id),
+        kwargs = dict(
+            data_path=self._legacy_session_path(session_id) if self.data_dir else None,
             compact_after_chars=self.compact_after_chars,
             keep_recent_turns=self.keep_recent_turns,
             compact_after_tokens=self.compact_after_tokens,
@@ -543,6 +648,9 @@ class SessionStore:
                 sid, s, b, a
             ),
         )
+        if self._vault is not None:
+            kwargs["vault_root"] = str(self._vault.root)
+        conv = Conversation(**kwargs)
         conv._save()
         return conv
 
@@ -568,6 +676,47 @@ class SessionStore:
             log.exception("session compaction callback failed")
 
     def _load_index(self) -> None:
+        if not self._vault:
+            return
+        try:
+            doc = self._vault.read("sessions", "index.md")
+            if doc and doc.frontmatter:
+                sessions_raw = doc.frontmatter.get("sessions")
+                if isinstance(sessions_raw, str):
+                    try:
+                        sessions = json.loads(sessions_raw)
+                    except (json.JSONDecodeError, TypeError):
+                        sessions = {}
+                elif isinstance(sessions_raw, dict):
+                    sessions = sessions_raw
+                else:
+                    sessions = {}
+                if not isinstance(sessions, dict):
+                    raise ValueError("sessions is not a dict")
+                clean = {}
+                for sid, entry in sessions.items():
+                    if not isinstance(sid, str) or not isinstance(entry, dict):
+                        continue
+                    clean[sid] = {
+                        "name": str(entry.get("name") or ""),
+                        "created": float(entry.get("created") or 0.0),
+                        "last_used": float(entry.get("last_used") or 0.0),
+                        "turns": int(entry.get("turns") or 0),
+                    }
+                active = doc.frontmatter.get("active")
+                self._index = {
+                    "active": active if isinstance(active, str) else None,
+                    "sessions": clean,
+                }
+                return
+        except Exception:  # noqa: BLE001
+            log.exception("discarding unreadable session index")
+        # Fallback: try legacy JSON index
+        if self.index_path:
+            self._load_legacy_index()
+
+    def _load_legacy_index(self) -> None:
+        """Load from legacy JSON sessions file (fallback)."""
         if not self.index_path:
             return
         try:
@@ -598,45 +747,108 @@ class SessionStore:
             self._index = {"active": None, "sessions": {}}
 
     def _save_index(self) -> None:
-        if not self.data_dir:
+        if not self._vault:
             return
-        tmp = self.index_path + ".tmp"
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(self._index, f, ensure_ascii=False)
-        os.replace(tmp, self.index_path)
+        now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        fm = {
+            "id": "index",
+            "updated_at": now,
+            "active": self._index["active"],
+            "sessions": json.dumps(self._index["sessions"]),
+        }
+        body_lines = ["# Session Index"]
+        for sid, entry in self._index["sessions"].items():
+            body_lines.append(f"\n## {sid}")
+            body_lines.append(f"\n- Name: {entry.get('name', '')}")
+            body_lines.append(f"- Created: {entry.get('created', 0)}")
+            body_lines.append(f"- Last used: {entry.get('last_used', 0)}")
+            body_lines.append(f"- Turns: {entry.get('turns', 0)}")
+        self._vault.write(
+            "sessions", "index.md",
+            title="Session Index",
+            frontmatter=fm,
+            content="\n".join(body_lines),
+        )
 
     def _adopt_orphans(self) -> None:
+        """Adopt orphan session files not in the index."""
+        # Adopt from vault sessions directory
+        if self._vault:
+            try:
+                vault_sessions_dir = self._vault.root / "sessions"
+                if vault_sessions_dir.is_dir():
+                    for item in sorted(vault_sessions_dir.iterdir()):
+                        if not item.is_file() or not item.name.endswith(".md"):
+                            continue
+                        if item.name == "index.md":
+                            continue
+                        session_id = item.stem
+                        if session_id in self._index["sessions"]:
+                            continue
+                        try:
+                            doc = self._vault.read("sessions", item.name)
+                            fm = doc.frontmatter if doc else {}
+                            turns_raw = fm.get("turns")
+                            if isinstance(turns_raw, str):
+                                try:
+                                    turns_raw = json.loads(turns_raw)
+                                except (json.JSONDecodeError, ValueError):
+                                    pass
+                            if isinstance(turns_raw, (list, tuple)):
+                                turns_count = len(turns_raw)
+                            else:
+                                try:
+                                    turns_count = int(turns_raw or 0)
+                                except (TypeError, ValueError):
+                                    turns_count = 0
+                            self._index["sessions"][session_id] = {
+                                "name": str(fm.get("name") or ""),
+                                "created": self._iso_ts(fm.get("created_at")),
+                                "last_used": self._iso_ts(fm.get("updated_at")),
+                                "turns": turns_count,
+                            }
+                            log.info("adopted orphan vault session %s (%d turns)", item.name, turns_count)
+                        except Exception:
+                            pass
+            except Exception:
+                log.exception("error adopting orphan vault sessions")
+
+        # Adopt from legacy JSON sessions directory
         if not self.sessions_dir:
             return
-        for name in sorted(os.listdir(self.sessions_dir)):
-            if not name.endswith(".json"):
-                continue
-            session_id = name[: -len(".json")]
-            if session_id in self._index["sessions"]:
-                continue
-            path = os.path.join(self.sessions_dir, name)
-            try:
-                mtime = os.path.getmtime(path)
-            except OSError:
-                continue
-            turns = 0
-            try:
-                with open(path, encoding="utf-8") as f:
-                    raw = json.load(f)
-                t = raw.get("turns")
-                if isinstance(t, list):
-                    turns = len(t)
-            except Exception:
-                pass
-            self._index["sessions"][session_id] = {
-                "name": "",
-                "created": mtime,
-                "last_used": mtime,
-                "turns": turns,
-            }
-            log.info("adopted orphan session file %s (%d turns)", name, turns)
+        try:
+            for name in sorted(os.listdir(self.sessions_dir)):
+                if not name.endswith(".json"):
+                    continue
+                session_id = name[:-len(".json")]
+                if session_id in self._index["sessions"]:
+                    continue
+                path = os.path.join(self.sessions_dir, name)
+                try:
+                    mtime = os.path.getmtime(path)
+                except OSError:
+                    continue
+                turns = 0
+                try:
+                    with open(path, encoding="utf-8") as f:
+                        raw = json.load(f)
+                    t = raw.get("turns")
+                    if isinstance(t, list):
+                        turns = len(t)
+                except Exception:
+                    pass
+                self._index["sessions"][session_id] = {
+                    "name": "",
+                    "created": mtime,
+                    "last_used": mtime,
+                    "turns": turns,
+                }
+                log.info("adopted orphan session file %s (%d turns)", name, turns)
+        except FileNotFoundError:
+            pass
 
     def _migrate_legacy(self) -> None:
+        """Migrate from legacy JSON files to vault storage."""
         legacy = os.path.join(self.data_dir, "conversation.json")
         if not os.path.exists(legacy):
             return

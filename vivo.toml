@@ -135,7 +135,9 @@ compact_after_chars = 65000
 compact_after_tokens = 0
 # How many recent turns stay verbatim during compaction.
 keep_recent_turns = 10
-# How often the background pass reviews local memory and keeps only high-value facts.
+# When the nightly memory pass runs, in your time zone (e.g. 03:00). It wakes the archive once a day at this wall-clock time and keeps only high-value facts. Empty = fall back to the interval below.
+dream_time = "03:00"
+# Fallback: how often the background pass runs when no dream time is set.
 dream_interval_s = 3600
 
 [agent]
